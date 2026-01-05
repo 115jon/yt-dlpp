@@ -120,7 +120,7 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 		// Regex is usually fine on small strings, but extracting helper name
 		// from sig_code (small) is safe.
 		std::regex helper_re(R"(([a-zA-Z0-9$]+)\.[a-zA-Z0-9$]+\(a,)");
-		std::string helper_code = "";
+		std::string helper_code;
 		std::smatch helper_match;
 		if (std::regex_search(sig_code, helper_match, helper_re)) {
 			std::string helper_name = helper_match[1].str();
@@ -128,7 +128,7 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 			helper_code = extract_helper_object(player_code, helper_name);
 		}
 
-		std::string n_code = "";
+		std::string n_code;
 		if (found_n) {
 			spdlog::info("Extracting n-function body...");
 			n_code = extract_function(player_code, n_func_name_);

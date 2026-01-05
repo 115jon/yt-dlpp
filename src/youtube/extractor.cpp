@@ -145,10 +145,10 @@ std::optional<VideoInfo> Extractor::process(const std::string &url) {
 
 			// Codec parsing
 			if (!fmt.mime_type.empty()) {
-				auto semi = fmt.mime_type.find(";");
+				auto semi = fmt.mime_type.find(';');
 				std::string type_part = fmt.mime_type.substr(0, semi);
 
-				auto slash = type_part.find("/");
+				auto slash = type_part.find('/');
 				if (slash != std::string::npos) {
 					std::string main_type = type_part.substr(0, slash);
 					std::string sub_type = type_part.substr(slash + 1);
@@ -163,11 +163,11 @@ std::optional<VideoInfo> Extractor::process(const std::string &url) {
 				auto codecs_pos = fmt.mime_type.find("codecs=\"");
 				if (codecs_pos != std::string::npos) {
 					auto start = codecs_pos + 8;
-					auto end = fmt.mime_type.find("\"", start);
+					auto end = fmt.mime_type.find('\"', start);
 					if (end != std::string::npos) {
 						std::string codecs =
 							fmt.mime_type.substr(start, end - start);
-						auto comma = codecs.find(",");
+						auto comma = codecs.find(',');
 						if (comma != std::string::npos) {
 							fmt.vcodec = codecs.substr(0, comma);
 							fmt.acodec = codecs.substr(comma + 2);
@@ -200,7 +200,7 @@ std::optional<VideoInfo> Extractor::process(const std::string &url) {
 						for (size_t i = 0; i < in.size(); ++i) {
 							if (in[i] == '%') {
 								if (i + 2 < in.size()) {
-									int value;
+									int value = 0;
 									std::istringstream is(in.substr(i + 1, 2));
 									if (is >> std::hex >> value) {
 										out += static_cast<char>(value);

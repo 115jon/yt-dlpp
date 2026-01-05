@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <boost/asio/ssl/error.hpp>
 #include <boost/beast/core/buffers_to_string.hpp>
 #include <boost/beast/ssl.hpp>
@@ -198,9 +199,7 @@ bool HttpClient::download_file(
 		long long chunk_size = 10 * 1024 * 1024;  // 10MB chunks
 
 		// If unknown size, just try one big generic request (old behavior)
-		if (total_size <= 0) {
-			total_size = 0;	 // Represents "unknown"
-		}
+		total_size = std::max<long long>(total_size, 0);
 
 		while (true) {
 			// Calculate Range

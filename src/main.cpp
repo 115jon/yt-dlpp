@@ -196,10 +196,9 @@ int main(int argc, char *argv[]) {
 			if (ytdlpp::media::Muxer::merge(args[0], args[1], args[2])) {
 				spdlog::info("Merge successful!");
 				return 0;
-			} else {
-				spdlog::error("Merge failed.");
-				return 1;
 			}
+			spdlog::error("Merge failed.");
+			return 1;
 		}
 
 		if (vm.count("url")) {
@@ -254,19 +253,15 @@ int main(int argc, char *argv[]) {
 				if (downloader.download(*info_opt, selector, merge_fmt)) {
 					spdlog::info("Operation complete.");
 					return 0;
-				} else {
-					spdlog::error("Download failed.");
-					return 1;
 				}
-
-			} else {
-				spdlog::error("Failed to extract video info.");
+				spdlog::error("Download failed.");
 				return 1;
 			}
-		} else {
-			std::cout << "Usage: yt-dlpp [options] <url>\n" << desc << "\n";
+			spdlog::error("Failed to extract video info.");
 			return 1;
 		}
+		std::cout << "Usage: yt-dlpp [options] <url>\n" << desc << "\n";
+		return 1;
 
 	} catch (const std::exception &e) {
 		std::cerr << "Error: " << e.what() << "\n";
