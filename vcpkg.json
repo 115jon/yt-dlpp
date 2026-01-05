@@ -1,0 +1,27 @@
+{
+  "dependencies": [
+    "boost-asio",
+    "boost-beast",
+    "boost-charconv",
+    "boost-filesystem",
+    "boost-program-options",
+    "boost-scope-exit",
+    "boost-outcome",
+    "boost-url",
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avformat",
+        "swresample",
+        "swscale"
+      ]
+    },
+    "fmt",
+    "nlohmann-json",
+    "openssl",
+    "quickjs-ng",
+    "spdlog"
+  ]
+}
