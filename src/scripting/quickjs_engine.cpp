@@ -4,8 +4,7 @@
 
 namespace ytdlpp::scripting {
 
-JsEngine::JsEngine() {
-	rt_ = JS_NewRuntime();
+JsEngine::JsEngine() : rt_(JS_NewRuntime()) {
 	if (!rt_) { throw std::runtime_error("Failed to create QuickJS runtime"); }
 	ctx_ = JS_NewContext(rt_);
 	if (!ctx_) {
@@ -33,7 +32,8 @@ std::string JsEngine::get_exception_str() {
 	return res;
 }
 
-void JsEngine::evaluate(const std::string &code) {
+Result<void> JsEngine::evaluate(const std::string &code) {
+	std::lock_guard<std::mutex> lock(mutex_);
 	// JS_Eval(ctx, input, input_len, filename, flags)
 	JSValue ret = JS_Eval(
 		ctx_, code.c_str(), code.length(), "<input>", JS_EVAL_TYPE_GLOBAL);
@@ -41,14 +41,19 @@ void JsEngine::evaluate(const std::string &code) {
 	if (JS_IsException(ret)) {
 		std::string err = get_exception_str();
 		JS_FreeValue(ctx_, ret);
-		throw std::runtime_error("JS Evaluation failed: " + err);
+		spdlog::error("JS Evaluation failed: {}", err);
+		return outcome::failure(
+			errc::extraction_failed);  // Using general extraction error for JS
+									   // fail
 	}
 
 	JS_FreeValue(ctx_, ret);
+	return outcome::success();
 }
 
-std::string JsEngine::call_function(const std::string &func_name,
-									const std::vector<std::string> &args) {
+Result<std::string> JsEngine::call_function(
+	const std::string &func_name, const std::vector<std::string> &args) {
+	std::lock_guard<std::mutex> lock(mutex_);
 	// Get the function object
 	JSValue global_obj = JS_GetGlobalObject(ctx_);
 	JSValue func_obj = JS_GetPropertyStr(ctx_, global_obj, func_name.c_str());
@@ -57,8 +62,8 @@ std::string JsEngine::call_function(const std::string &func_name,
 
 	if (!JS_IsFunction(ctx_, func_obj)) {
 		JS_FreeValue(ctx_, func_obj);
-		throw std::runtime_error(
-			"Function not found or not a function: " + func_name);
+		spdlog::error("Function not found or not a function: {}", func_name);
+		return outcome::failure(errc::extraction_failed);
 	}
 
 	// Convert args
@@ -79,7 +84,8 @@ std::string JsEngine::call_function(const std::string &func_name,
 	if (JS_IsException(ret)) {
 		std::string err = get_exception_str();
 		JS_FreeValue(ctx_, ret);
-		throw std::runtime_error("JS Call failed: " + err);
+		spdlog::error("JS Call failed: {}", err);
+		return outcome::failure(errc::extraction_failed);
 	}
 
 	const char *res_str = JS_ToCString(ctx_, ret);

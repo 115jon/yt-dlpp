@@ -7,8 +7,7 @@
 #include <boost/beast/version.hpp>
 #include <map>
 #include <string>
-
-#include "error.hpp"
+#include <ytdlpp/result.hpp>
 
 namespace beast = boost::beast;
 namespace http = beast::http;

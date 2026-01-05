@@ -146,6 +146,40 @@ Result<VideoInfo> Extractor::process(const std::string &url) {
 					fmt_json.value("contentLength", "0"));
 			}
 
+			// Language & Preference
+			if (fmt_json.contains("audioTrack")) {
+				const auto &at = fmt_json["audioTrack"];
+				std::string display_name = at.value("displayName", "");
+				std::string id = at.value("id", "");
+				bool is_default = at.value("audioIsDefault", false);
+
+				// Extract language code
+				if (!id.empty()) {
+					size_t dot = id.find('.');
+					if (dot != std::string::npos)
+						fmt.language = id.substr(0, dot);
+					else
+						fmt.language = id;
+				}
+
+				// Lowercase display name for checks
+				std::string dn_lower = display_name;
+				std::transform(
+					dn_lower.begin(), dn_lower.end(), dn_lower.begin(),
+					[](unsigned char c) { return std::tolower(c); });
+
+				if (dn_lower.find("descriptive") != std::string::npos) {
+					if (!fmt.language.empty()) fmt.language += "-desc";
+					fmt.language_preference = -10;
+				} else if (dn_lower.find("original") != std::string::npos) {
+					fmt.language_preference = 10;
+				} else if (is_default) {
+					fmt.language_preference = 5;
+				} else {
+					fmt.language_preference = -1;
+				}
+			}
+
 			// Codec parsing
 			if (!fmt.mime_type.empty()) {
 				auto semi = fmt.mime_type.find(';');
@@ -302,8 +336,6 @@ Result<VideoInfo> Extractor::process(const std::string &url) {
 			}
 
 			if (fmt.url.empty()) {
-				spdlog::debug(
-					"Skipping format {} because URL is empty", fmt.itag);
 				skipped_any_due_to_url = true;
 				return;
 			}
@@ -412,6 +444,10 @@ std::string Extractor::extract_video_id(const std::string &url_str) {
 	return "";
 }
 
+}  // namespace ytdlpp::youtube
+
+namespace ytdlpp {
+
 void to_json(nlohmann::json &j, const VideoFormat &f) {
 	j = nlohmann::json{
 		{"format_id", std::to_string(f.itag)},
@@ -462,4 +498,4 @@ void to_json(nlohmann::json &j, const VideoInfo &i) {
 		{"formats", i.formats}};
 }
 
-}  // namespace ytdlpp::youtube
+}  // namespace ytdlpp

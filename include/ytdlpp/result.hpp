@@ -1,7 +1,6 @@
 #pragma once
 
 #include <boost/outcome.hpp>
-#include <string>
 #include <system_error>
 
 namespace ytdlpp {

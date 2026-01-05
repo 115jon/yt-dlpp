@@ -18,9 +18,9 @@ find_package(FFMPEG REQUIRED COMPONENTS avcodec avformat swresample swscale)
 add_subdirectory(3rdparty/certify)
 
 # Basic definitions
-add_executable(
-  yt-dlpp
-  src/main.cpp
+add_library(
+  yt-dlpp-lib STATIC
+  src/ytdlpp.cpp
   src/error.cpp
   src/net/http_client.cpp
   src/scripting/quickjs_engine.cpp
@@ -29,14 +29,13 @@ add_executable(
   src/youtube/player_script.cpp
   src/youtube/decipher.cpp
   src/downloader/downloader.cpp
-  src/media/muxer.cpp
-  src/utils.hpp)
+  src/media/muxer.cpp)
 
-target_compile_definitions(yt-dlpp PUBLIC BOOST_ASIO_NO_DEPRECATED)
+target_compile_definitions(yt-dlpp-lib PUBLIC BOOST_ASIO_NO_DEPRECATED)
 
 if(MSVC)
   target_compile_definitions(
-    yt-dlpp
+    yt-dlpp-lib
     PUBLIC -D_WIN32_WINNT=0x0601
            -D_SCL_SECURE_NO_WARNINGS=1
            -D_CRT_SECURE_NO_WARNINGS=1
@@ -44,31 +43,45 @@ if(MSVC)
            -D_SILENCE_CXX17_ADAPTOR_TYPEDEFS_DEPRECATION_WARNING)
 endif()
 
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
 target_include_directories(
-  yt-dlpp PRIVATE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
-                  $<INSTALL_INTERFACE:include>)
+  yt-dlpp-lib
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+         $<INSTALL_INTERFACE:include>)
 
 target_link_libraries(
-  yt-dlpp
+  yt-dlpp-lib
+  PUBLIC Boost::system
   PRIVATE Boost::program_options
           Boost::filesystem
           Boost::url
-          Boost::system
           Boost::charconv
           fmt::fmt
           nlohmann_json::nlohmann_json
           OpenSSL::SSL
           OpenSSL::Crypto
-          spdlog::spdlog
+          spdlog::spdlog_header_only
           qjs
           certify::core
           ${FFMPEG_LIBRARIES})
 
-target_include_directories(yt-dlpp PRIVATE ${FFMPEG_INCLUDE_DIRS})
+add_executable(simple_download examples/simple_download.cpp)
+target_link_libraries(simple_download PRIVATE yt-dlpp-lib)
+
+target_include_directories(yt-dlpp-lib PRIVATE ${FFMPEG_INCLUDE_DIRS})
+
+add_executable(yt-dlpp-cli src/main.cpp)
+
+target_link_libraries(yt-dlpp-cli PRIVATE yt-dlpp-lib fmt::fmt)
 
 # Enable all warnings
 if(MSVC)
-  target_compile_options(yt-dlpp PRIVATE /W4)
+  target_compile_options(yt-dlpp-lib PRIVATE /W4)
+  target_compile_options(yt-dlpp-cli PRIVATE /W4)
 else()
   target_compile_options(yt-dlpp PRIVATE -Wall -Wextra -Wpedantic)
 endif()

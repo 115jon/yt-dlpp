@@ -15,6 +15,10 @@
 #include <windows.h>
 #endif
 
+#include <fmt/color.h>
+
+#include <ytdlpp/types.hpp>
+
 #include "downloader/downloader.hpp"
 #include "media/muxer.hpp"
 #include "net/http_client.hpp"
@@ -23,10 +27,7 @@
 
 namespace po = boost::program_options;
 
-// Helper for colored printing
-#include <fmt/color.h>
-
-void print_formats_table(std::vector<ytdlpp::youtube::VideoFormat> formats) {
+void print_formats_table(std::vector<ytdlpp::VideoFormat> formats) {
 	// Deduplicate formats by itag first
 	std::sort(formats.begin(), formats.end(),
 			  [](const auto &a, const auto &b) { return a.itag < b.itag; });

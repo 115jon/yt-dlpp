@@ -1,6 +1,5 @@
-#include "error.hpp"
-
 #include <string>
+#include <ytdlpp/result.hpp>
 
 namespace ytdlpp {
 

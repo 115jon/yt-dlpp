@@ -137,14 +137,19 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 		std::string full_script = helper_code + "\n" + sig_code + "\n" + n_code;
 		spdlog::info("Loading extracted script into JS engine ({} bytes)",
 					 full_script.length());
-		js_.evaluate(full_script);
+		auto eval_res = js_.evaluate(full_script);
+		if (eval_res.has_error()) {
+			spdlog::error("Evaluating script failed");
+			return false;
+		}
 
 		if (found_n && !n_func_name_.empty()) {
 			std::string wrapper =
 				"function " + n_func_name_ +
 				"_wrapper(a) { var r = " + n_func_name_ +
 				"(a); return Array.isArray(r) ? r.join('') : r; };";
-			js_.evaluate(wrapper);
+			auto w_res = js_.evaluate(wrapper);
+			if (w_res.has_error()) return false;
 			n_func_name_ += "_wrapper";	 // Use the wrapper from now on
 		}
 
@@ -158,22 +163,19 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 
 std::string SigDecipherer::decipher_signature(const std::string &signature) {
 	if (sig_func_name_.empty()) return signature;
-	try {
-		return js_.call_function(sig_func_name_, {signature});
-	} catch (const std::exception &e) {
-		spdlog::error("Signature decipher failed: {}", e.what());
-		return signature;
-	}
+	auto res = js_.call_function(sig_func_name_, {signature});
+	if (res.has_value()) return res.value();
+	spdlog::error("Signature decipher failed: {}", res.error().message());
+	return signature;
 }
 
 std::string SigDecipherer::transform_n(const std::string &n) {
 	if (n_func_name_.empty()) return n;
-	try {
-		return js_.call_function(n_func_name_, {n});
-	} catch (const std::exception &e) {
-		spdlog::warn("N-parameter transformation failed: {}", e.what());
-		return n;
-	}
+	auto res = js_.call_function(n_func_name_, {n});
+	if (res.has_value()) return res.value();
+	spdlog::warn(
+		"N-parameter transformation failed: {}", res.error().message());
+	return n;
 }
 
 std::string SigDecipherer::extract_function(const std::string &code,

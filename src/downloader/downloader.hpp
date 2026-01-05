@@ -2,9 +2,9 @@
 
 #include <optional>
 #include <string>
+#include <ytdlpp/types.hpp>
 
 #include "net/http_client.hpp"
-#include "youtube/extractor.hpp"
 
 namespace ytdlpp {
 
@@ -12,24 +12,25 @@ class Downloader {
    public:
 	explicit Downloader(net::HttpClient &http);
 
-	bool download(
-		const youtube::VideoInfo &info,
-		const std::string &format_selector = "best",
-		const std::optional<std::string> &merge_format = std::nullopt);
+	bool download(const ytdlpp::VideoInfo &info,
+				  const std::string &format_selector = "best",
+				  const std::optional<std::string> &merge_format = std::nullopt,
+				  ytdlpp::ProgressCallback progress_cb = nullptr);
 
 	struct StreamInfo {
-		const youtube::VideoFormat *video = nullptr;
-		const youtube::VideoFormat *audio = nullptr;
+		const ytdlpp::VideoFormat *video = nullptr;
+		const ytdlpp::VideoFormat *audio = nullptr;
 	};
 
-	StreamInfo select_streams(const youtube::VideoInfo &info,
+	StreamInfo select_streams(const ytdlpp::VideoInfo &info,
 							  const std::string &selector);
 
    private:
 	net::HttpClient &http_;
 
-	bool download_stream(const youtube::VideoFormat &format,
-						 const std::string &output_path);
+	bool download_stream(const ytdlpp::VideoFormat &format,
+						 const std::string &output_path,
+						 ytdlpp::ProgressCallback progress_cb);
 	bool merge_streams(const std::string &video_path,
 					   const std::string &audio_path,
 					   const std::string &output_path);

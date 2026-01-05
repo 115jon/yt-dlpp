@@ -10,6 +10,13 @@ namespace ytdlpp::media {
 
 bool Muxer::merge(const std::string &video_path, const std::string &audio_path,
 				  const std::string &output_path) {
+	// Log simulated ffmpeg command line for verbose parity
+	spdlog::debug(
+		"ffmpeg command line: ffmpeg -y -loglevel repeat+info -i \"file:{}\" "
+		"-i \"file:{}\" -c copy -map 0:v:0 -map 1:a:0 -movflags +faststart "
+		"\"file:{}\"",
+		video_path, audio_path, output_path);
+
 	AVFormatContext *video_ctx = nullptr;
 	AVFormatContext *audio_ctx = nullptr;
 	AVFormatContext *out_ctx = nullptr;

@@ -1,13 +1,14 @@
 #pragma once
 
 #include <boost/charconv.hpp>
-#include <optional>
+#include <charconv>
+#include <string>
 #include <string_view>
-
-#include "error.hpp"
+#include <ytdlpp/result.hpp>
 
 namespace ytdlpp::utils {
 
+// Safe conversions utilizing boost::charconv
 template <typename T>
 Result<T> to_number(std::string_view sv) {
 	T val;
@@ -17,6 +18,7 @@ Result<T> to_number(std::string_view sv) {
 	return make_error_code(errc::invalid_number_format);
 }
 
+// Wrappers for common uses
 inline Result<int> to_int(std::string_view sv) { return to_number<int>(sv); }
 
 inline Result<long long> to_long(std::string_view sv) {
