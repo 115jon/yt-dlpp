@@ -95,17 +95,15 @@ bool Downloader::download(const youtube::VideoInfo &info,
 			fs::remove(video_path);
 			fs::remove(audio_path);
 			return true;
-		} else {
-			spdlog::error("Merge failed. Keeping separate files.");
-			return false;
 		}
-	} else {
-		// Just rename single file if needed
-		std::string src = streams.video ? video_path : audio_path;
-		if (src != final_path) { fs::rename(src, final_path); }
-		spdlog::info("Downloaded: {}", final_path);
-		return true;
+		spdlog::error("Merge failed. Keeping separate files.");
+		return false;
 	}
+	// Just rename single file if needed
+	std::string src = streams.video ? video_path : audio_path;
+	if (src != final_path) { fs::rename(src, final_path); }
+	spdlog::info("Downloaded: {}", final_path);
+	return true;
 }
 
 Downloader::StreamInfo Downloader::select_streams(
@@ -212,7 +210,7 @@ bool Downloader::download_stream(const youtube::VideoFormat &format,
 	auto start_time = std::chrono::steady_clock::now();
 	auto last_log = start_time;
 
-	bool result = http_.download_file(
+	auto result = http_.download_file(
 		format.url, output_path, [&](long long now, long long total) {
 			auto current_time = std::chrono::steady_clock::now();
 			// Log every 200ms
@@ -245,7 +243,12 @@ bool Downloader::download_stream(const youtube::VideoFormat &format,
 			}
 		});
 	std::cout << "\n";
-	return result;
+
+	if (result.has_error()) {
+		spdlog::error("Download error: {}", result.error().message());
+		return false;
+	}
+	return true;
 }
 
 bool Downloader::merge_streams(const std::string &video_path,

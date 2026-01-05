@@ -6,17 +6,18 @@
 
 #include "decipher.hpp"
 #include "player_script.hpp"
+#include "utils.hpp"
 
 namespace ytdlpp::youtube {
 
 Extractor::Extractor(net::HttpClient &http, scripting::JsEngine &js)
 	: http_(http), js_(js) {}
 
-std::optional<VideoInfo> Extractor::process(const std::string &url) {
+Result<VideoInfo> Extractor::process(const std::string &url) {
 	std::string video_id = extract_video_id(url);
 	if (video_id.empty()) {
 		spdlog::error("Invalid YouTube URL");
-		return std::nullopt;
+		return outcome::failure(errc::invalid_url);
 	}
 
 	spdlog::info("Extracting URL: {}", url);
@@ -52,7 +53,6 @@ std::optional<VideoInfo> Extractor::process(const std::string &url) {
 	std::vector<std::pair<std::string, nlohmann::json>> responses_with_clients;
 
 	for (const auto &client : clients) {
-		// Log "Downloading <client> player API JSON" ...
 		std::string friendly_name;
 		if (client.client_name == "WEB")
 			friendly_name = "web";
@@ -67,14 +67,15 @@ std::optional<VideoInfo> Extractor::process(const std::string &url) {
 			"{}: Downloading {} player API JSON", video_id, friendly_name);
 
 		auto info = get_info_with_client(video_id, client);
-		if (info) {
-			responses_with_clients.push_back({client.client_name, *info});
+		if (info.has_value()) {
+			responses_with_clients.push_back(
+				{client.client_name, info.value()});
 		}
 	}
 
 	if (responses_with_clients.empty()) {
 		spdlog::error("All clients failed to get video info.");
-		return std::nullopt;
+		return outcome::failure(errc::video_not_found);
 	}
 
 	// Process formats
@@ -91,8 +92,10 @@ std::optional<VideoInfo> Extractor::process(const std::string &url) {
 		info.description = details.value("shortDescription", "");
 		info.uploader = details.value("author", "");
 		info.uploader_id = details.value("channelId", "");
-		info.duration = std::stoll(details.value("lengthSeconds", "0"));
-		info.view_count = std::stoll(details.value("viewCount", "0"));
+		info.duration = utils::to_number_default<long long>(
+			details.value("lengthSeconds", "0"));
+		info.view_count = utils::to_number_default<long long>(
+			details.value("viewCount", "0"));
 
 		if (details.contains("thumbnail") &&
 			details["thumbnail"].contains("thumbnails")) {
@@ -129,8 +132,8 @@ std::optional<VideoInfo> Extractor::process(const std::string &url) {
 			fmt.width = fmt_json.value("width", 0);
 			fmt.height = fmt_json.value("height", 0);
 			fmt.fps = fmt_json.value("fps", 0);
-			fmt.audio_sample_rate =
-				std::stoi(fmt_json.value("audioSampleRate", "0"));
+			fmt.audio_sample_rate = utils::to_number_default<int>(
+				fmt_json.value("audioSampleRate", "0"));
 			fmt.audio_channels = fmt_json.value("audioChannels", 0);
 
 			// Bitrates
@@ -139,8 +142,8 @@ std::optional<VideoInfo> Extractor::process(const std::string &url) {
 			if (fmt_json.contains("averageBitrate"))
 				fmt.tbr = fmt_json["averageBitrate"].get<double>() / 1000.0;
 			if (fmt_json.contains("contentLength")) {
-				fmt.content_length =
-					std::stoll(fmt_json.value("contentLength", "0"));
+				fmt.content_length = utils::to_number_default<long long>(
+					fmt_json.value("contentLength", "0"));
 			}
 
 			// Codec parsing
@@ -352,7 +355,7 @@ std::optional<VideoInfo> Extractor::process(const std::string &url) {
 	return info;
 }
 
-std::optional<nlohmann::json> Extractor::get_info_with_client(
+Result<nlohmann::json> Extractor::get_info_with_client(
 	const std::string &video_id, const InnertubeContext &client) {
 	std::string api_url = "https://www.youtube.com/youtubei/v1/player";
 
@@ -364,28 +367,38 @@ std::optional<nlohmann::json> Extractor::get_info_with_client(
 	auto headers = Innertube::get_headers(client);
 
 	auto res = http_.post(api_url, payload.dump(), headers);
-	if (res.status_code != 200) {
+	if (res.has_error()) {
+		spdlog::warn(
+			"Client {} failed: {}", client.client_name, res.error().message());
+		return outcome::failure(res.error());
+	}
+
+	auto r = res.value();
+	if (r.status_code != 200) {
 		spdlog::warn("Client {} failed with status {}", client.client_name,
-					 res.status_code);
-		return std::nullopt;
+					 r.status_code);
+		return outcome::failure(errc::request_failed);
 	}
 
 	try {
-		auto json = nlohmann::json::parse(res.body);
+		auto json = nlohmann::json::parse(r.body);
 		if (json.contains("playabilityStatus") &&
 			json["playabilityStatus"]["status"] != "OK") {
 			spdlog::warn(
 				"Video unplayable with client {}: {}", client.client_name,
 				json["playabilityStatus"]["status"].get<std::string>());
-			return std::nullopt;
+			return outcome::failure(errc::video_not_found);
 		}
 		return json;
-	} catch (...) { return std::nullopt; }
+	} catch (...) { return outcome::failure(errc::json_parse_error); }
 }
 
 std::string Extractor::extract_video_id(const std::string &url_str) {
 	try {
-		boost::urls::url_view u(url_str);
+		auto u_res = boost::urls::parse_uri(url_str);
+		if (u_res.has_error()) return "";
+		auto u = u_res.value();
+
 		if (u.host().find("youtu.be") != std::string::npos) {
 			std::string path = u.path();
 			if (!path.empty() && path[0] == '/') path = path.substr(1);
@@ -397,12 +410,6 @@ std::string Extractor::extract_video_id(const std::string &url_str) {
 		}
 	} catch (...) {}
 	return "";
-}
-
-// Deprecated in favor of integrated decipherer
-void Extractor::descramble_formats(std::vector<VideoFormat> & /*formats*/,
-								   const std::string & /*player_url*/) {
-	// Deprecated
 }
 
 void to_json(nlohmann::json &j, const VideoFormat &f) {

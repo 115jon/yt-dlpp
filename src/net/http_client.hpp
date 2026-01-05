@@ -8,6 +8,8 @@
 #include <map>
 #include <string>
 
+#include "error.hpp"
+
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace net = boost::asio;
@@ -25,22 +27,24 @@ struct HttpResponse {
 class HttpClient {
    public:
 	explicit HttpClient(boost::asio::io_context &ioc);
-	~HttpClient() = default;
 
-	HttpResponse get(const std::string &url,
-					 const std::map<std::string, std::string> &headers = {});
-	HttpResponse post(const std::string &url, const std::string &body,
-					  const std::map<std::string, std::string> &headers = {});
+	Result<HttpResponse> get(
+		const std::string &url,
+		const std::map<std::string, std::string> &headers = {});
+	Result<HttpResponse> post(
+		const std::string &url, const std::string &body,
+		const std::map<std::string, std::string> &headers = {});
 
-	bool download_file(const std::string &url, const std::string &output_path,
-					   std::function<void(long long dl_now, long long dl_total)>
-						   progress_cb = nullptr);
+	Result<void> download_file(
+		const std::string &url, const std::string &output_path,
+		std::function<void(long long dl_now, long long dl_total)> progress_cb =
+			nullptr);
 
    private:
 	boost::asio::io_context &ioc_;
 	ssl::context ssl_ctx_;
 
-	HttpResponse perform_request(
+	Result<HttpResponse> perform_request(
 		http::verb method, const std::string &url, const std::string &body,
 		const std::map<std::string, std::string> &headers);
 };

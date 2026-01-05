@@ -209,11 +209,12 @@ int main(int argc, char *argv[]) {
 			ytdlpp::scripting::JsEngine js;
 			ytdlpp::youtube::Extractor extractor(client, js);
 
-			auto info_opt = extractor.process(url);
+			auto result_info = extractor.process(url);
 
-			if (info_opt) {
+			if (result_info.has_value()) {
+				const auto &info = result_info.value();
 				if (vm.count("list-formats")) {
-					print_formats_table(info_opt->formats);
+					print_formats_table(info.formats);
 					return 0;
 				}
 
@@ -224,7 +225,7 @@ int main(int argc, char *argv[]) {
 										   : "best";
 
 					ytdlpp::Downloader downloader(client);
-					auto streams = downloader.select_streams(*info_opt, format);
+					auto streams = downloader.select_streams(info, format);
 
 					if (streams.video) {
 						std::cout << streams.video->url << "\n";
@@ -250,14 +251,15 @@ int main(int argc, char *argv[]) {
 					merge_fmt = vm["merge-output-format"].as<std::string>();
 				}
 
-				if (downloader.download(*info_opt, selector, merge_fmt)) {
+				if (downloader.download(info, selector, merge_fmt)) {
 					spdlog::info("Operation complete.");
 					return 0;
 				}
 				spdlog::error("Download failed.");
 				return 1;
 			}
-			spdlog::error("Failed to extract video info.");
+			spdlog::error("Failed to extract video info: {}",
+						  result_info.error().message());
 			return 1;
 		}
 		std::cout << "Usage: yt-dlpp [options] <url>\n" << desc << "\n";
@@ -267,6 +269,4 @@ int main(int argc, char *argv[]) {
 		std::cerr << "Error: " << e.what() << "\n";
 		return 1;
 	}
-
-	return 0;
 }

@@ -6,7 +6,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find Dependencies
-find_package(Boost REQUIRED COMPONENTS program_options filesystem url system)
+find_package(Boost REQUIRED COMPONENTS program_options filesystem url system
+                                       charconv)
 find_package(fmt CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -20,6 +21,7 @@ add_subdirectory(3rdparty/certify)
 add_executable(
   yt-dlpp
   src/main.cpp
+  src/error.cpp
   src/net/http_client.cpp
   src/scripting/quickjs_engine.cpp
   src/youtube/innertube.cpp
@@ -27,7 +29,10 @@ add_executable(
   src/youtube/player_script.cpp
   src/youtube/decipher.cpp
   src/downloader/downloader.cpp
-  src/media/muxer.cpp)
+  src/media/muxer.cpp
+  src/utils.hpp)
+
+target_compile_definitions(yt-dlpp PUBLIC BOOST_ASIO_NO_DEPRECATED)
 
 if(MSVC)
   target_compile_definitions(
@@ -49,6 +54,7 @@ target_link_libraries(
           Boost::filesystem
           Boost::url
           Boost::system
+          Boost::charconv
           fmt::fmt
           nlohmann_json::nlohmann_json
           OpenSSL::SSL

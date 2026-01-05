@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "error.hpp"
 #include "innertube.hpp"
 #include "net/http_client.hpp"
 #include "scripting/quickjs_engine.hpp"
@@ -48,19 +49,16 @@ class Extractor {
 	explicit Extractor(net::HttpClient &http, scripting::JsEngine &js);
 
 	// Main Entry Point
-	std::optional<VideoInfo> process(const std::string &url);
+	Result<VideoInfo> process(const std::string &url);
 
    private:
 	net::HttpClient &http_;
 	scripting::JsEngine &js_;
 
 	// Tries to get info using a specific client context
-	std::optional<nlohmann::json> get_info_with_client(
-		const std::string &video_id, const InnertubeContext &client);
+	Result<nlohmann::json> get_info_with_client(const std::string &video_id,
+												const InnertubeContext &client);
 
-	// Descrambling logic
-	void descramble_formats(std::vector<VideoFormat> &formats,
-							const std::string &player_url);
 	std::string extract_video_id(const std::string &url);
 };
 

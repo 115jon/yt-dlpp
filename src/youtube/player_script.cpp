@@ -16,10 +16,18 @@ std::optional<std::string> PlayerScript::fetch(const std::string &video_id) {
 	std::string url =
 		fmt::format("https://www.youtube.com/watch?v={}", video_id);
 
-	auto res = http_.get(
+	auto res_result = http_.get(
 		url, {{"User-Agent",
 			   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 			   "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"}});
+
+	if (res_result.has_error()) {
+		spdlog::error(
+			"Failed to fetch video page: {}", res_result.error().message());
+		return std::nullopt;
+	}
+	auto res = res_result.value();
+
 	if (res.status_code != 200) {
 		spdlog::error(
 			"Failed to fetch video page. Status: {}", res.status_code);
@@ -58,7 +66,14 @@ std::optional<std::string> PlayerScript::fetch(const std::string &video_id) {
 
 	// spdlog::info("Downloading player script from: {}", player_url_); //
 	// Redundant, matches yt-dlp trace log instead
-	auto script_res = http_.get(player_url_);
+	auto script_res_result = http_.get(player_url_);
+	if (script_res_result.has_error()) {
+		spdlog::error("Failed to download player script: {}",
+					  script_res_result.error().message());
+		return std::nullopt;
+	}
+	auto script_res = script_res_result.value();
+
 	if (script_res.status_code != 200) {
 		spdlog::error("Failed to download player script");
 		return std::nullopt;
