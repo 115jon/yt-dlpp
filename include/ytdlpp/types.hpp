@@ -1,14 +1,23 @@
 #pragma once
 
+#include <cstdint>	// Added for uint8_t
 #include <functional>
 #include <string>
 #include <vector>
 
 namespace ytdlpp {
 
-using ProgressCallback =
-	std::function<void(const std::string &status,
-					   int progress)>;	// Simplified for now, can be expanded
+struct DownloadProgress {
+	long long total_downloaded_bytes;
+	long long total_size_bytes;
+	double percentage;
+	double speed_bytes_per_sec;
+	double eta_seconds;
+};
+
+using ProgressCallback = std::function<void(
+	const std::string &status, const DownloadProgress &progress)>;
+using StreamDataCallback = std::function<void(const std::vector<uint8_t> &)>;
 
 struct VideoFormat {
 	int itag;

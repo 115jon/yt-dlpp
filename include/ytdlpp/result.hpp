@@ -30,6 +30,9 @@ enum class errc {
 	// Conversion
 	invalid_number_format = 50,
 
+	// Media
+	muxer_error = 60,
+
 	unknown = 100
 };
 

@@ -22,6 +22,7 @@
     "nlohmann-json",
     "openssl",
     "quickjs-ng",
-    "spdlog"
+    "spdlog",
+    "zlib"
   ]
 }

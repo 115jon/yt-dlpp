@@ -370,3 +370,4 @@ MigrationBackup/
 .env
 tests/benchmark_output
 tests/download_test
+.agent

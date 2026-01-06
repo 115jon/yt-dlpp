@@ -1,29 +1,39 @@
 #include <fmt/format.h>
-#include <quickjs.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <boost/asio.hpp>
-#include <boost/beast.hpp>
 #include <boost/program_options.hpp>
+#include <csignal>
 #include <iostream>
-#include <nlohmann/json.hpp>
 #include <string>
 
 // Windows headers for console
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
 #endif
 
 #include <fmt/color.h>
 
+#include <ytdlpp/audio_streamer.hpp>
+#include <ytdlpp/downloader.hpp>
+#include <ytdlpp/extractor.hpp>
+#include <ytdlpp/http_client.hpp>
 #include <ytdlpp/types.hpp>
 
-#include "downloader/downloader.hpp"
 #include "media/muxer.hpp"
-#include "net/http_client.hpp"
-#include "scripting/quickjs_engine.hpp"
-#include "youtube/extractor.hpp"
+
+// Signal handling
+std::shared_ptr<std::atomic<bool>> g_cancel_token =
+	std::make_shared<std::atomic<bool>>(false);
+
+void signal_handler(int) {
+	if (g_cancel_token) g_cancel_token->store(true);
+}
 
 namespace po = boost::program_options;
 
@@ -44,11 +54,6 @@ void print_formats_table(std::vector<ytdlpp::VideoFormat> formats) {
 	});
 
 	// Header
-	// yt-dlp Style:
-	// Columns: Yellow
-	// Bars: Blue
-	// ID  EXT   RESOLUTION FPS CH │   FILESIZE   TBR PROTO │ VCODEC VBR ACODEC
-	// ABR ASR MORE INFO
 	auto blue_bar = fmt::format(fg(fmt::color::dodger_blue), "|");
 	auto yellow_col = fg(fmt::color::yellow);
 
@@ -144,6 +149,9 @@ int main(int argc, char *argv[]) {
 #endif
 
 	try {
+		// Create a stderr logger and set as default
+		auto stderr_logger = spdlog::stderr_color_mt("stderr");
+		spdlog::set_default_logger(stderr_logger);
 		// Setup spdlog to look like yt-dlp: [youtube] message
 		spdlog::set_pattern("[youtube] %v");
 
@@ -158,7 +166,9 @@ int main(int argc, char *argv[]) {
 			"mp4, webm)")(
 			"manual-merge", po::value<std::vector<std::string>>()->multitoken(),
 			"Manually merge video and audio: --manual-merge <video> <audio> "
-			"<output>")("verbose,v", "Enable verbose logging");
+			"<output>")(
+			"stream-audio", "Stream audio to stdout (s16le, 48kHz, stereo)")(
+			"verbose,v", "Enable verbose logging");
 
 		po::positional_options_description p;
 		p.add("url", 1);
@@ -206,66 +216,147 @@ int main(int argc, char *argv[]) {
 			std::string url = vm["url"].as<std::string>();
 
 			boost::asio::io_context ioc;
-			ytdlpp::net::HttpClient client(ioc);
-			ytdlpp::scripting::JsEngine js;
-			ytdlpp::youtube::Extractor extractor(client, js);
 
-			auto result_info = extractor.process(url);
+			// Shared HTTP Client
+			auto http =
+				std::make_shared<ytdlpp::net::HttpClient>(ioc.get_executor());
 
-			if (result_info.has_value()) {
-				const auto &info = result_info.value();
-				if (vm.count("list-formats")) {
-					print_formats_table(info.formats);
-					return 0;
-				}
+			// Extractor
+			ytdlpp::youtube::Extractor extractor(http, ioc.get_executor());
 
-				if (vm.count("get-url")) {
-					// Selection logic (get-url mode)
-					std::string format =
-						vm.count("format") ? vm["format"].as<std::string>()
-										   : "best";
+			std::optional<ytdlpp::Result<ytdlpp::VideoInfo>> result_info_opt;
 
-					ytdlpp::Downloader downloader(client);
-					auto streams = downloader.select_streams(info, format);
+			extractor.async_process(
+				url, [&](ytdlpp::Result<ytdlpp::VideoInfo> res) {
+					result_info_opt = std::move(res);
+				});
 
-					if (streams.video) {
-						std::cout << streams.video->url << "\n";
-					}
-					if (streams.audio && streams.audio != streams.video) {
-						std::cout << streams.audio->url << "\n";
-					}
+			ioc.run();
+			ioc.restart();
 
-					if (!streams.video && !streams.audio) {
-						std::cerr << "Format not found\n";
-						return 1;
-					}
-					return 0;
-				}
-
-				// Download mode
-				ytdlpp::Downloader downloader(client);
-				std::string selector =
-					vm.count("format") ? vm["format"].as<std::string>()
-									   : "best";
-				std::optional<std::string> merge_fmt = std::nullopt;
-				if (vm.count("merge-output-format")) {
-					merge_fmt = vm["merge-output-format"].as<std::string>();
-				}
-
-				if (downloader.download(info, selector, merge_fmt)) {
-					spdlog::info("Operation complete.");
-					return 0;
-				}
-				spdlog::error("Download failed.");
+			if (!result_info_opt.has_value()) {
+				fmt::println(stderr, "Extraction timed out or failed to run");
 				return 1;
 			}
-			spdlog::error("Failed to extract video info: {}",
-						  result_info.error().message());
-			return 1;
+			auto result_info = std::move(*result_info_opt);
+
+			if (!result_info.has_value()) {
+				fmt::println(stderr, "Failed to extract info: {}",
+							 result_info.error().message());
+				return 1;
+			}
+			const auto &info = result_info.value();
+
+			if (vm.count("stream-audio")) {
+				// Audio Streaming Mode
+#ifdef _WIN32
+				_setmode(_fileno(stdout), _O_BINARY);
+#endif
+				// Direct all logs to stderr so stdout is pure audio
+
+				// Find best audio
+				std::string audio_url;
+				const ytdlpp::VideoFormat *best = nullptr;
+				for (const auto &fmt : info.formats) {
+					if (fmt.vcodec == "none" && fmt.acodec != "none") {
+						if (!best || fmt.tbr > best->tbr) best = &fmt;
+					}
+				}
+				if (best) audio_url = best->url;
+
+				if (audio_url.empty()) {
+					fmt::println(stderr, "No audio stream found.");
+					return 1;
+				}
+
+				// Register signal handler for this scope
+				std::signal(SIGINT, signal_handler);
+
+				ytdlpp::media::AudioStreamer streamer(ioc.get_executor());
+
+				ytdlpp::media::AudioStreamer::AudioStreamOptions opts;
+				opts.sample_rate = 48000;
+				opts.channels = 2;
+				opts.sample_fmt =
+					ytdlpp::media::AudioStreamer::SampleFormat::S16;
+
+				streamer.async_stream(
+					audio_url, opts,
+					[](const std::vector<uint8_t> &data) {
+						if (!data.empty()) {
+							std::cout.write(
+								reinterpret_cast<const char *>(data.data()),
+								data.size());
+							std::cout.flush();
+						}
+					},
+					[&](ytdlpp::Result<void>) {});
+
+				// Wait for stream to finish or cancel
+				ioc.run();
+				std::signal(SIGINT, SIG_DFL);  // Restore default
+
+				return 0;
+			}
+
+			if (vm.count("list-formats")) {
+				print_formats_table(info.formats);
+				return 0;
+			}
+
+			if (vm.count("get-url")) {
+				// Selection logic (get-url mode)
+				std::string format =
+					vm.count("format") ? vm["format"].as<std::string>()
+									   : "best";
+
+				ytdlpp::Downloader downloader(http);
+				auto streams = downloader.select_streams(info, format);
+
+				if (streams.video) { std::cout << streams.video->url << "\n"; }
+				if (streams.audio && streams.audio != streams.video) {
+					std::cout << streams.audio->url << "\n";
+				}
+
+				if (!streams.video && !streams.audio) {
+					std::cerr << "Format not found\n";
+					return 1;
+				}
+				return 0;
+			}
+
+			// Download mode
+			std::string selector =
+				vm.count("format") ? vm["format"].as<std::string>() : "best";
+			std::optional<std::string> merge_fmt = std::nullopt;
+			if (vm.count("merge-output-format")) {
+				merge_fmt = vm["merge-output-format"].as<std::string>();
+			}
+
+			ytdlpp::Downloader downloader(http);
+
+			downloader.async_download(
+				info, selector, merge_fmt,
+				[](const std::string &status,
+				   const ytdlpp::DownloadProgress &prog) {
+					std::cout << "\r" << status << ": " << prog.percentage
+							  << "%   " << std::flush;
+				},
+				[](ytdlpp::Result<std::string> res) {
+					if (res)
+						std::cout << "\nOperation complete.\n"
+								  << res.value() << "\n";
+					else
+						std::cerr
+							<< "\nDownload failed: " << res.error().message()
+							<< "\n";
+				});
+			ioc.run();
+			return 0;
 		}
+
 		std::cout << "Usage: yt-dlpp [options] <url>\n" << desc << "\n";
 		return 1;
-
 	} catch (const std::exception &e) {
 		std::cerr << "Error: " << e.what() << "\n";
 		return 1;
