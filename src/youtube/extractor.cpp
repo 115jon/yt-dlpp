@@ -2,12 +2,13 @@
 
 #include <boost/url.hpp>
 #include <mutex>
+#include <set>
 #include <ytdlpp/extractor.hpp>
 
-#include "../scripting/quickjs_engine.hpp"
 #include "decipher.hpp"
 #include "innertube.hpp"
 #include "player_script.hpp"
+#include "scripting/quickjs_engine.hpp"
 #include "utils.hpp"
 
 namespace ytdlpp::youtube {
@@ -104,8 +105,90 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 				"Could not download player script. Signature deciphering "
 				"unavailable.");
 		}
-		fetch_all_clients();  // Parallel API calls
+		// Fetch TV config page first, then fetch all clients
+		fetch_tv_config();
 	}
+
+	// Extract visitor data from ytcfg.set({...}) in HTML
+	std::string extract_visitor_data(const std::string &html) {
+		// Look for ytcfg.set({...})
+		std::string search = "ytcfg.set(";
+		size_t pos = html.find(search);
+		if (pos == std::string::npos) return "";
+
+		pos += search.length();
+		if (pos >= html.length() || html[pos] != '{') return "";
+
+		// Find matching closing brace
+		int brace_count = 1;
+		size_t start = pos;
+		pos++;
+		while (pos < html.length() && brace_count > 0) {
+			if (html[pos] == '{')
+				brace_count++;
+			else if (html[pos] == '}')
+				brace_count--;
+			pos++;
+		}
+
+		if (brace_count != 0) return "";
+
+		std::string json_str = html.substr(start, pos - start);
+		try {
+			auto ytcfg = nlohmann::json::parse(json_str);
+
+			// Try multiple paths for VISITOR_DATA
+			if (ytcfg.contains("VISITOR_DATA")) {
+				return ytcfg["VISITOR_DATA"].get<std::string>();
+			}
+			if (ytcfg.contains("INNERTUBE_CONTEXT") &&
+				ytcfg["INNERTUBE_CONTEXT"].contains("client") &&
+				ytcfg["INNERTUBE_CONTEXT"]["client"].contains("visitorData")) {
+				return ytcfg["INNERTUBE_CONTEXT"]["client"]["visitorData"]
+					.get<std::string>();
+			}
+		} catch (...) {}
+
+		return "";
+	}
+
+	// Fetch TV config page to get visitor data
+	void fetch_tv_config() {
+		if (cancelled) return;
+
+		auto self = shared_from_this();
+		std::string tv_url = "https://www.youtube.com/tv";
+
+		spdlog::info("{}: Downloading tv client config", video_id);
+
+		std::map<std::string, std::string> headers = {
+			{"User-Agent",
+			 "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"},
+			{"Accept", "text/html"},
+		};
+
+		http->async_get(
+			tv_url,
+			[self](Result<net::HttpResponse> res) {
+				if (self->cancelled) return;
+
+				if (res.has_value() && res.value().status_code == 200) {
+					self->tv_visitor_data_ =
+						self->extract_visitor_data(res.value().body);
+					if (!self->tv_visitor_data_.empty()) {
+						spdlog::debug("Got TV visitor data: {}...",
+									  self->tv_visitor_data_.substr(0, 20));
+					}
+				}
+
+				// Proceed to fetch all clients
+				self->fetch_all_clients();
+			},
+			headers);
+	}
+
+	// Store TV visitor data
+	std::string tv_visitor_data_;
 
 	std::string process_url_n(const std::string &url_raw) {
 		try {
@@ -138,13 +221,24 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		pending_clients_ = clients.size();
 
 		for (const auto &client : clients) {
+			// Create friendly names for logging (matches yt-dlp output)
 			std::string friendly_name = client.client_name;
-			if (client.client_name == "WEB")
+			if (client.client_name == "WEB" &&
+				client.user_agent.find("Safari/605") != std::string::npos)
+				friendly_name = "web_safari";
+			else if (client.client_name == "WEB")
 				friendly_name = "web";
+			else if (client.client_name == "ANDROID" &&
+					 client.device_make.empty())
+				friendly_name = "android_sdkless";	// No deviceMake = sdkless
 			else if (client.client_name == "ANDROID")
 				friendly_name = "android";
 			else if (client.client_name == "IOS")
 				friendly_name = "ios";
+			else if (client.client_name == "TVHTML5")
+				friendly_name = "tv";
+			else if (client.client_name == "MWEB")
+				friendly_name = "mweb";
 
 			spdlog::info(
 				"{}: Downloading {} player API JSON", video_id, friendly_name);
@@ -194,6 +288,11 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 
 		auto headers = Innertube::get_headers(client);
 
+		// Add visitor data for TV client (helps with authentication)
+		if (client.client_name == "TVHTML5" && !tv_visitor_data_.empty()) {
+			headers["X-Goog-Visitor-Id"] = tv_visitor_data_;
+		}
+
 		http->async_post(
 			api_url, payload.dump(),
 			[client_name = client.client_name,
@@ -234,34 +333,95 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		if (json.contains("videoDetails")) {
 			const auto &details = json["videoDetails"];
 			info.title = details.value("title", "");
+			info.fulltitle = info.title;
 			info.description = details.value("shortDescription", "");
 			info.uploader = details.value("author", "");
+			info.channel = info.uploader;
 			info.uploader_id = details.value("channelId", "");
+			info.channel_id = info.uploader_id;
+			info.channel_url =
+				"https://www.youtube.com/channel/" + info.channel_id;
 			info.duration = utils::to_number_default<long long>(
 				details.value("lengthSeconds", "0"));
+
+			// Format duration string
+			long long hrs = info.duration / 3600;
+			long long mins = (info.duration % 3600) / 60;
+			long long secs = info.duration % 60;
+			if (hrs > 0) {
+				info.duration_string =
+					fmt::format("{}:{:02d}:{:02d}", hrs, mins, secs);
+			} else {
+				info.duration_string = fmt::format("{}:{:02d}", mins, secs);
+			}
+
 			info.view_count = utils::to_number_default<long long>(
 				details.value("viewCount", "0"));
+
+			// Live status
+			info.is_live = details.value("isLive", false);
+			info.was_live = details.value("isPostLiveDvr", false);
+			if (info.is_live) {
+				info.live_status = "is_live";
+			} else if (info.was_live) {
+				info.live_status = "was_live";
+			} else {
+				info.live_status = "not_live";
+			}
 
 			if (details.contains("thumbnail") &&
 				details["thumbnail"].contains("thumbnails")) {
 				const auto &thumbs = details["thumbnail"]["thumbnails"];
 				if (!thumbs.empty()) {
 					info.thumbnail = thumbs.back().value("url", "");
+					// Populate thumbnails vector
+					for (const auto &t : thumbs) {
+						Thumbnail thumb;
+						thumb.url = t.value("url", "");
+						thumb.width = t.value("width", 0);
+						thumb.height = t.value("height", 0);
+						info.thumbnails.push_back(thumb);
+					}
+				}
+			}
+
+			// Keywords/tags
+			if (details.contains("keywords")) {
+				for (const auto &kw : details["keywords"]) {
+					if (kw.is_string()) {
+						info.tags.push_back(kw.get<std::string>());
+					}
 				}
 			}
 		}
 
 		if (json.contains("microformat") &&
 			json["microformat"].contains("playerMicroformatRenderer")) {
-			auto upload_date_raw =
-				json["microformat"]["playerMicroformatRenderer"].value(
-					"uploadDate", "");
+			const auto &mf = json["microformat"]["playerMicroformatRenderer"];
+
+			auto upload_date_raw = mf.value("uploadDate", "");
 			if (!upload_date_raw.empty()) {
 				upload_date_raw.erase(std::remove(upload_date_raw.begin(),
 												  upload_date_raw.end(), '-'),
 									  upload_date_raw.end());
-				info.upload_date = upload_date_raw;
+				info.upload_date = upload_date_raw.substr(0, 8);  // YYYYMMDD
 			}
+
+			// Availability
+			info.playable_in_embed = mf.value("isPlayableInEmbed", true);
+
+			// Categories
+			if (mf.contains("category")) {
+				info.categories.push_back(mf.value("category", ""));
+			}
+
+			// Family safe determines age limit
+			bool family_safe = mf.value("isFamilySafe", true);
+			info.age_limit = family_safe ? 0 : 18;
+
+			// Availability status
+			bool unlisted = mf.value("isUnlisted", false);
+			info.availability = unlisted ? "unlisted" : "public";
 		}
 
 		for (const auto &[client_name, resp] : responses) {
@@ -444,14 +604,33 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			}
 		}
 
+		// Deduplicate formats by itag (keep first occurrence which has
+		// priority)
+		std::set<int> seen_itags;
+		std::vector<VideoFormat> unique_formats;
+		for (const auto &fmt : info.formats) {
+			if (seen_itags.find(fmt.itag) == seen_itags.end()) {
+				seen_itags.insert(fmt.itag);
+				unique_formats.push_back(fmt);
+			}
+		}
+		info.formats = std::move(unique_formats);
+
 		complete(info);
 	}
 };
 
 const std::vector<InnertubeContext> &AsyncSession::get_clients() {
+	// Priority order based on yt-dlp recommendations:
+	// 1. android_sdkless - Doesn't require PO Token (best choice)
+	// 2. tv              - Good format availability, no PO Token
+	// 3. web_safari      - Pre-merged HLS formats, good fallback
+	// 4. web             - Standard web client with JS player
 	static const std::vector<InnertubeContext> _clients = {
-		Innertube::CLIENT_WEB, Innertube::CLIENT_ANDROID,
-		Innertube::CLIENT_IOS};
+		Innertube::CLIENT_ANDROID_SDKLESS,	// Best: No POT needed
+		Innertube::CLIENT_TV,				// Good formats, no POT
+		Innertube::CLIENT_WEB_SAFARI,		// HLS formats
+		Innertube::CLIENT_WEB};				// Standard fallback
 	return _clients;
 }
 
@@ -508,10 +687,6 @@ void Extractor::async_process_impl(
 		std::move(url), std::move(handler), std::move(handler_ex));
 }
 
-}  // namespace ytdlpp::youtube
-
-namespace ytdlpp {
-
 void to_json(nlohmann::json &j, const VideoFormat &f) {
 	j = nlohmann::json{
 		{"format_id", std::to_string(f.itag)},
@@ -548,18 +723,53 @@ void to_json(nlohmann::json &j, const VideoFormat &f) {
 }
 
 void to_json(nlohmann::json &j, const VideoInfo &i) {
+	// Convert formats manually
+	nlohmann::json formats_json = nlohmann::json::array();
+	for (const auto &f : i.formats) {
+		nlohmann::json fmt_j;
+		to_json(fmt_j, f);
+		formats_json.push_back(fmt_j);
+	}
+
+	// Convert thumbnails
+	nlohmann::json thumbs_json = nlohmann::json::array();
+	for (const auto &t : i.thumbnails) {
+		thumbs_json.push_back(
+			{{"url", t.url}, {"width", t.width}, {"height", t.height}});
+	}
+
 	j = nlohmann::json{
 		{"id", i.id},
 		{"title", i.title},
+		{"fulltitle", i.fulltitle},
 		{"description", i.description},
 		{"uploader", i.uploader},
 		{"uploader_id", i.uploader_id},
+		{"uploader_url", i.uploader_url},
+		{"channel", i.channel},
+		{"channel_id", i.channel_id},
+		{"channel_url", i.channel_url},
 		{"upload_date", i.upload_date},
 		{"duration", i.duration},
+		{"duration_string", i.duration_string},
 		{"view_count", i.view_count},
+		{"like_count", i.like_count},
+		{"comment_count", i.comment_count},
 		{"webpage_url", i.webpage_url},
 		{"thumbnail", i.thumbnail},
-		{"formats", i.formats}};
+		{"thumbnails", thumbs_json},
+		{"formats", formats_json},
+		{"categories", i.categories},
+		{"tags", i.tags},
+		{"age_limit", i.age_limit},
+		{"availability", i.availability},
+		{"live_status", i.live_status},
+		{"playable_in_embed", i.playable_in_embed},
+		{"is_live", i.is_live},
+		{"was_live", i.was_live},
+		{"extractor", i.extractor},
+		{"extractor_key", i.extractor_key},
+		{"_type", i._type}};
 }
 
-}  // namespace ytdlpp
+}  // namespace ytdlpp::youtube

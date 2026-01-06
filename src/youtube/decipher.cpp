@@ -3,62 +3,46 @@
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
-#include <regex>
+#include <boost/regex.hpp>
 
 namespace ytdlpp::youtube {
-
-// =============================================================================
-// OPTIMIZED STATIC REGEX PATTERNS
-// =============================================================================
-// These are compiled once at program startup instead of on every call.
-// Using std::regex::optimize for better matching performance at the cost of
-// slower initial compilation (which happens only once).
-// =============================================================================
 
 namespace {
 
 // N-parameter function patterns - ordered by likelihood of matching
-struct NParamRegexes {
-	std::regex standard;
-	std::regex assignment;
-	std::regex direct;
+// We use lazy initialization to avoid static initialization order issues
 
-	NParamRegexes()
-		// Standard pattern: Func=function(a){...a.split("")...}
-		: standard(
-			  R"RE(([a-zA-Z0-9$]+)=function\(([a-zA-Z0-9$]+)\)\{[^}]*?\2\.split\((?:""|'')))RE",
-			  std::regex::optimize),
-		  // Assignment pattern: Func=function(a){...var b=a.split("")...}
-		  assignment(
-			  R"RE(([a-zA-Z0-9$]+)=function\(([a-zA-Z0-9$]+)\)\{[^}]*?var\s+[a-zA-Z0-9$]+\s*=\s*\2\.split\((?:""|'')))RE",
-			  std::regex::optimize),
-		  // Direct split pattern (duplicate of standard, kept for
-		  // compatibility)
-		  direct(
-			  R"RE(([a-zA-Z0-9$]+)=function\(([a-zA-Z0-9$]+)\)\{[^}]*?\2\.split\((?:""|'')))RE",
-			  std::regex::optimize) {}
-};
-
-// Helper object pattern - extracts object name from signature function body
-// This regex runs on small strings (extracted function body ~500-2000 bytes)
-// so performance here is less critical
-struct HelperRegex {
-	std::regex pattern;
-
-	HelperRegex()
-		: pattern(R"RE(([a-zA-Z0-9$]+)\.[a-zA-Z0-9$]+\(a,)RE",
-				  std::regex::optimize) {}
-};
-
-// Get static regex instances (initialized once on first use)
-const NParamRegexes &get_n_param_regexes() {
-	static const NParamRegexes instance;
-	return instance;
+const boost::regex &get_n_param_pattern_1() {
+	// Standard pattern: Func=function(a){...a.split("")...}
+	// Uses backreference \2 to match the parameter name
+	static const boost::regex pattern(
+		R"(([a-zA-Z0-9$_]+)\s*=\s*function\s*\(\s*([a-zA-Z0-9$_]+)\s*\)\s*\{[^}]*?\2\.split\s*\(\s*["'][^"']*["']\s*\))",
+		boost::regex::optimize);
+	return pattern;
 }
 
-const HelperRegex &get_helper_regex() {
-	static const HelperRegex instance;
-	return instance;
+const boost::regex &get_n_param_pattern_2() {
+	// Assignment pattern: Func=function(a){...var b=a.split("")...}
+	static const boost::regex pattern(
+		R"(([a-zA-Z0-9$_]+)\s*=\s*function\s*\(\s*([a-zA-Z0-9$_]+)\s*\)\s*\{[^}]*?var\s+[a-zA-Z0-9$_]+\s*=\s*\2\.split\s*\()",
+		boost::regex::optimize);
+	return pattern;
+}
+
+const boost::regex &get_n_param_pattern_3() {
+	// Enhanced pattern - allows for more whitespace variations
+	static const boost::regex pattern(
+		R"(([a-zA-Z0-9$_]{1,30})\s*=\s*function\s*\(\s*([a-zA-Z0-9$_]{1,10})\s*\)\s*\{[^{}]*\2\.split\s*\()",
+		boost::regex::optimize);
+	return pattern;
+}
+
+// Helper object pattern - extracts object name from signature function body
+const boost::regex &get_helper_pattern() {
+	static const boost::regex pattern(
+		R"(([a-zA-Z0-9$_]+)\.[a-zA-Z0-9$_]+\s*\(\s*a\s*,)",
+		boost::regex::optimize);
+	return pattern;
 }
 
 }  // namespace
@@ -73,10 +57,10 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 	spdlog::info("Scanning player script ({} bytes)...", player_code.size());
 
 	// =========================================================================
-	// SIGNATURE FUNCTION DETECTION (String-based - fast)
+	// SIGNATURE FUNCTION DETECTION (String-based - fastest approach)
 	// =========================================================================
 	// Pattern: funcName=function(a){a=a.split("")
-	// We use string search which is much faster than regex for this pattern.
+	// String search is faster than regex for this simple pattern.
 
 	std::string sig_body_start = "a=a.split(\"";
 	size_t sig_pos = player_code.find(sig_body_start);
@@ -100,7 +84,8 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 				size_t name_start = name_end;
 				while (name_start > 0) {
 					char c = player_code[name_start - 1];
-					if (isalnum(static_cast<unsigned char>(c)) || c == '$') {
+					if (isalnum(static_cast<unsigned char>(c)) || c == '$' ||
+						c == '_') {
 						name_start--;
 					} else {
 						break;
@@ -122,47 +107,48 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 		return false;
 	}
 
-	// =========================================================================
-	// N-PARAMETER FUNCTION DETECTION (Regex-based - uses static patterns)
-	// =========================================================================
-	// We use pre-compiled static regex patterns for better performance.
-
-	const auto &n_regexes = get_n_param_regexes();
 	bool found_n = false;
-	std::smatch n_match;
+	boost::smatch n_match;
 
-	// Try each pattern in order of likelihood
-	if (std::regex_search(player_code, n_match, n_regexes.standard)) {
-		n_func_name_ = n_match[1].str();
-		found_n = true;
-		spdlog::info("Found n-parameter function name: {} (standard pattern)",
-					 n_func_name_);
-	} else if (std::regex_search(player_code, n_match, n_regexes.assignment)) {
-		n_func_name_ = n_match[1].str();
-		found_n = true;
-		spdlog::info("Found n-parameter function name: {} (assignment pattern)",
-					 n_func_name_);
-	} else if (std::regex_search(player_code, n_match, n_regexes.direct)) {
-		n_func_name_ = n_match[1].str();
-		found_n = true;
-		spdlog::info("Found n-parameter function name: {} (direct pattern)",
-					 n_func_name_);
+	try {
+		// Try each pattern in order of likelihood
+		if (boost::regex_search(
+				player_code, n_match, get_n_param_pattern_1())) {
+			n_func_name_ = n_match[1].str();
+			found_n = true;
+			spdlog::info("Found n-parameter function name: {} (pattern 1)",
+						 n_func_name_);
+		} else if (boost::regex_search(
+					   player_code, n_match, get_n_param_pattern_2())) {
+			n_func_name_ = n_match[1].str();
+			found_n = true;
+			spdlog::info("Found n-parameter function name: {} (pattern 2)",
+						 n_func_name_);
+		} else if (boost::regex_search(
+					   player_code, n_match, get_n_param_pattern_3())) {
+			n_func_name_ = n_match[1].str();
+			found_n = true;
+			spdlog::info("Found n-parameter function name: {} (pattern 3)",
+						 n_func_name_);
+		}
+	} catch (const boost::regex_error &e) {
+		spdlog::error("Regex error during n-function search: {}", e.what());
 	}
 
-	if (!found_n) { spdlog::warn("Could not find n-function via regex."); }
+	if (!found_n) {
+		spdlog::warn(
+			"Could not find n-function via regex. "
+			"N-parameter throttling mitigation unavailable.");
+	}
 
-	// =========================================================================
-	// FUNCTION EXTRACTION
-	// =========================================================================
 	try {
 		spdlog::info("Extracting signature function body...");
 		std::string sig_code = extract_function(player_code, sig_func_name_);
 
-		// Helper object search - regex on small string is acceptable
-		const auto &helper_re = get_helper_regex();
+		// Helper object search - regex on small string is very fast
 		std::string helper_code;
-		std::smatch helper_match;
-		if (std::regex_search(sig_code, helper_match, helper_re.pattern)) {
+		boost::smatch helper_match;
+		if (boost::regex_search(sig_code, helper_match, get_helper_pattern())) {
 			std::string helper_name = helper_match[1].str();
 			spdlog::info("Found signature helper object: {}", helper_name);
 			helper_code = extract_helper_object(player_code, helper_name);

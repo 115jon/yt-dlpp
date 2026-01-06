@@ -5,6 +5,7 @@
     "boost-charconv",
     "boost-filesystem",
     "boost-program-options",
+    "boost-regex",
     "boost-scope-exit",
     "boost-outcome",
     "boost-url",

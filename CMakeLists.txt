@@ -48,6 +48,7 @@ endif()
 find_package(boost_asio CONFIG REQUIRED)
 find_package(boost_charconv CONFIG REQUIRED)
 find_package(boost_program_options CONFIG REQUIRED)
+find_package(boost_regex CONFIG REQUIRED)
 find_package(boost_scope_exit CONFIG REQUIRED)
 find_package(boost_url CONFIG REQUIRED)
 
@@ -165,6 +166,7 @@ target_link_libraries(
           qjs
           certify::core
           ZLIB::ZLIB
+          Boost::regex
           ${FFMPEG_LIBRARIES}
           Boost::scope_exit)
 
@@ -172,9 +174,9 @@ target_include_directories(yt-dlpp-lib PRIVATE ${FFMPEG_INCLUDE_DIRS})
 
 add_subdirectory(examples)
 
-add_executable(yt-dlpp-cli src/main.cpp)
+add_executable(yt-dlpp src/main.cpp)
 
-target_link_libraries(yt-dlpp-cli PRIVATE yt-dlpp-lib fmt::fmt)
+target_link_libraries(yt-dlpp PRIVATE yt-dlpp-lib fmt::fmt)
 
 # =============================================================================
 # EXECUTABLE-SPECIFIC OPTIMIZATIONS
@@ -182,19 +184,19 @@ target_link_libraries(yt-dlpp-cli PRIVATE yt-dlpp-lib fmt::fmt)
 
 if(MSVC)
   target_compile_options(yt-dlpp-lib PRIVATE /W4 /bigobj)
-  target_compile_options(yt-dlpp-cli PRIVATE /W4 /bigobj)
+  target_compile_options(yt-dlpp PRIVATE /W4 /bigobj)
 
   if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
-    target_compile_options(yt-dlpp-cli PRIVATE /O2 /Ob2 /Oi /Ot /GL)
+    target_compile_options(yt-dlpp PRIVATE /O2 /Ob2 /Oi /Ot /GL)
   endif()
 else()
   if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
-    target_compile_options(yt-dlpp-cli PRIVATE -O3 -ffunction-sections
-                                               -fdata-sections)
-    target_link_options(yt-dlpp-cli PRIVATE -Wl,--gc-sections)
+    target_compile_options(yt-dlpp PRIVATE -O3 -ffunction-sections
+                                           -fdata-sections)
+    target_link_options(yt-dlpp PRIVATE -Wl,--gc-sections)
 
     if(YTDLPP_STRIP_SYMBOLS AND CMAKE_BUILD_TYPE STREQUAL "Release")
-      target_link_options(yt-dlpp-cli PRIVATE -s)
+      target_link_options(yt-dlpp PRIVATE -s)
     endif()
   endif()
 endif()

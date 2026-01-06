@@ -53,93 +53,85 @@ void print_formats_table(std::vector<ytdlpp::VideoFormat> formats) {
 		return a.tbr < b.tbr;
 	});
 
-	// Header
-	auto blue_bar = fmt::format(fg(fmt::color::dodger_blue), "|");
-	auto yellow_col = fg(fmt::color::yellow);
-
-	fmt::print(yellow_col, "{:<4} {:<5} {:<11} {:>3} {:>2} ", "ID", "EXT",
-			   "RESOLUTION", "FPS", "CH");
-	fmt::print("{} ", blue_bar);
-	fmt::print(yellow_col, "{:<9} {:>4} {:<5} ", "FILESIZE", "TBR", "PROTO");
-	fmt::print("{} ", blue_bar);
-	fmt::print(yellow_col, "{:<16} {:<12} {:>3} {:>3} {}\n", "VCODEC", "ACODEC",
-			   "ABR", "ASR", "MORE INFO");
-
-	// Separator line
-	fmt::print(fg(fmt::color::white), "{:-^110}\n", "");
+	// Build table data first to calculate column widths
+	struct Row {
+		std::string id, ext, res, fps, ch, size, tbr, proto, vcodec, acodec,
+			abr, asr, info;
+		bool is_grey = false;
+	};
+	std::vector<Row> rows;
 
 	for (const auto &f : formats) {
-		// ID - Green
-		std::string id = std::to_string(f.itag);
+		Row r;
+		r.id = std::to_string(f.itag);
+		r.ext = f.ext.empty() ? "unk" : f.ext;
+		r.res = (f.vcodec != "none" && f.width > 0)
+					? fmt::format("{}x{}", f.width, f.height)
+					: "audio only";
+		r.fps = (f.fps > 0) ? std::to_string(f.fps) : "";
+		r.ch = (f.audio_channels > 0) ? std::to_string(f.audio_channels) : "";
 
-		// Ext
-		std::string ext = f.ext;
-		if (ext.empty()) ext = "unk";
-
-		// Resolution
-		std::string res = (f.vcodec != "none" && f.width > 0)
-							  ? fmt::format("{}x{}", f.width, f.height)
-							  : "audio only";
-
-		// FPS
-		std::string fps = (f.fps > 0) ? std::to_string(f.fps) : "";
-
-		// CH
-		std::string ch =
-			(f.audio_channels > 0) ? std::to_string(f.audio_channels) : "";
-
-		// Filesize
-		std::string size = "~";
 		if (f.content_length > 0) {
 			double mib = (double)f.content_length / 1024.0 / 1024.0;
-			size = fmt::format("{:.2f}MiB", mib);
+			r.size = fmt::format("{:.2f}MiB", mib);
+		} else {
+			r.size = "~";
 		}
 
-		// TBR
-		std::string tbr = (f.tbr > 0) ? fmt::format("{}k", (int)f.tbr) : "N/A";
+		r.tbr = (f.tbr > 0) ? fmt::format("{}k", (int)f.tbr) : "";
+		r.proto = "https";
+		if (f.url.find("m3u8") != std::string::npos) r.proto = "m3u8";
 
-		// Proto
-		std::string proto = "https";  // Assuming https usually
-		if (f.url.find("m3u8") != std::string::npos) proto = "m3u8";
+		r.vcodec = f.vcodec;
+		if (r.vcodec.length() > 16) r.vcodec = r.vcodec.substr(0, 13) + "...";
+		if (r.vcodec == "none") r.vcodec = "images";
 
-		// VCodec
-		std::string vc = f.vcodec;
-		if (vc.length() > 16) vc = vc.substr(0, 13) + "...";
-		if (vc == "none") vc = "images";
+		r.acodec = f.acodec;
+		if (r.acodec.length() > 12) r.acodec = r.acodec.substr(0, 9) + "...";
 
-		// ACodec
-		std::string ac = f.acodec;
-		if (ac.length() > 12) ac = ac.substr(0, 9) + "...";
+		r.abr = (f.abr > 0) ? std::to_string((int)f.abr) + "k" : "";
+		r.asr = (f.audio_sample_rate > 0)
+					? std::to_string(f.audio_sample_rate / 1000) + "k"
+					: "";
 
-		// Info - Grey if audio/video only
-		std::string info;
-		bool is_grey = false;
 		if (f.vcodec != "none" && f.acodec == "none") {
-			info += "video only";
-			is_grey = true;
+			r.info = "video only";
+			r.is_grey = true;
 		} else if (f.vcodec == "none" && f.acodec != "none") {
-			info += "audio only";
-			is_grey = true;
+			r.info = "audio only";
+			r.is_grey = true;
 		}
+		if (f.height > 0) r.info += fmt::format(", {}p", f.height);
 
-		if (f.height > 0) info += fmt::format(", {}p", f.height);
+		rows.push_back(r);
+	}
 
-		// Print Row
-		fmt::print(fg(fmt::color::green), "{:<4} ", id);
-		fmt::print("{:<5} ", ext);
-		fmt::print(is_grey ? fg(fmt::color::gray) : fg(fmt::color::white),
-				   "{:<11} ", res);
-		fmt::print("{:>3} {:>2} ", fps, ch);
-		fmt::print("{} ", blue_bar);
-		fmt::print("{:<9} {:>4} {:<5} ", size, tbr, proto);
-		fmt::print("{} ", blue_bar);
-		fmt::print("{:<16} {:<12} {:>3} {:>3} ", vc, ac,
-				   (f.abr > 0 ? std::to_string((int)f.abr) + "k" : ""),
-				   (f.audio_sample_rate > 0
-						? std::to_string(f.audio_sample_rate / 1000) + "k"
-						: ""));
-		fmt::print(is_grey ? fg(fmt::color::gray) : fg(fmt::color::white),
-				   "{}\n", info);
+	// Header - matching yt-dlp format
+	fmt::print(
+		"ID  EXT   RESOLUTION FPS CH |   FILESIZE    TBR PROTO | VCODEC        "
+		"   VBR ACODEC      ABR ASR MORE INFO\n");
+	fmt::print("{:-^119}\n", "");
+
+	// Print rows with proper alignment matching yt-dlp
+	for (const auto &r : rows) {
+		auto info_color =
+			r.is_grey ? fg(fmt::color::gray) : fg(fmt::color::white);
+
+		// ID left-aligned 3 chars, EXT 5 chars, RES 10 chars, FPS 3 right, CH 2
+		// right
+		fmt::print("{:<3} {:<5} ", r.id, r.ext);
+		fmt::print(info_color, "{:<10} ", r.res);
+		fmt::print("{:>3} {:>2} | ", r.fps, r.ch);
+
+		// FILESIZE 10 right, TBR 6 right, PROTO 5
+		fmt::print("{:>10} {:>6} {:<5} | ", r.size, r.tbr, r.proto);
+
+		// VCODEC 16, VBR 3, ACODEC 11, ABR 3, ASR 3
+		fmt::print("{:<16} {:>3} {:<11} {:>3} {:>3} ", r.vcodec, "", r.acodec,
+				   r.abr, r.asr);
+
+		// MORE INFO
+		fmt::print(info_color, "{}\n", r.info);
 	}
 }
 
@@ -160,6 +152,7 @@ int main(int argc, char *argv[]) {
 			"url", po::value<std::string>(), "URL to download")(
 			"format,f", po::value<std::string>(), "Format selector")(
 			"list-formats,F", "List available formats")(
+			"dump-json,j", "Output video info as JSON")(
 			"get-url,g", "Print URL")(
 			"merge-output-format", po::value<std::string>(),
 			"Output format for merging (e.g. mkv, "
@@ -296,6 +289,14 @@ int main(int argc, char *argv[]) {
 				ioc.run();
 				std::signal(SIGINT, SIG_DFL);  // Restore default
 
+				return 0;
+			}
+
+			if (vm.count("dump-json")) {
+				// Output video info as JSON (yt-dlp -j compatibility)
+				nlohmann::json j;
+				ytdlpp::youtube::to_json(j, info);
+				std::cout << j.dump(2) << std::endl;
 				return 0;
 			}
 
