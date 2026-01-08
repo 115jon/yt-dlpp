@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ytdlpp/ytdlpp_export.h>
+
 #include <boost/asio/any_completion_executor.hpp>
 #include <boost/asio/any_completion_handler.hpp>
 #include <boost/asio/any_io_executor.hpp>
@@ -11,6 +13,7 @@
 #include <ytdlpp/result.hpp>
 #include <ytdlpp/types.hpp>
 
+
 // Forward declarations
 namespace ytdlpp::net {
 class HttpClient;
@@ -20,7 +23,7 @@ namespace ytdlpp {
 
 namespace asio = boost::asio;
 
-class Downloader {
+class YTDLPP_EXPORT Downloader {
    public:
 	Downloader(const Downloader &) = delete;
 	Downloader &operator=(const Downloader &) = delete;

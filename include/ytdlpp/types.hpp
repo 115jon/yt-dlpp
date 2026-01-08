@@ -1,13 +1,16 @@
 #pragma once
 
+#include <ytdlpp/ytdlpp_export.h>
+
 #include <cstdint>	// Added for uint8_t
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace ytdlpp {
 
-struct DownloadProgress {
+struct YTDLPP_EXPORT DownloadProgress {
 	long long total_downloaded_bytes;
 	long long total_size_bytes;
 	double percentage;
@@ -19,7 +22,7 @@ using ProgressCallback = std::function<void(
 	const std::string &status, const DownloadProgress &progress)>;
 using StreamDataCallback = std::function<void(const std::vector<uint8_t> &)>;
 
-struct VideoFormat {
+struct YTDLPP_EXPORT VideoFormat {
 	int itag = 0;
 	std::string url;
 	std::string mime_type;
@@ -49,21 +52,21 @@ struct VideoFormat {
 };
 
 // Represents a chapter in a video
-struct Chapter {
+struct YTDLPP_EXPORT Chapter {
 	double start_time = 0.0;
 	double end_time = 0.0;
 	std::string title;
 };
 
 // Represents a thumbnail
-struct Thumbnail {
+struct YTDLPP_EXPORT Thumbnail {
 	std::string url;
 	int width = 0;
 	int height = 0;
 	std::string id;
 };
 
-struct VideoInfo {
+struct YTDLPP_EXPORT VideoInfo {
 	std::string id;
 	std::string title;
 	std::string fulltitle;	// Full title with special chars
@@ -113,6 +116,57 @@ struct VideoInfo {
 	std::string extractor = "youtube";
 	std::string extractor_key = "Youtube";
 	std::string _type = "video";
+};
+
+// Search result entry (lightweight, for search listings)
+struct YTDLPP_EXPORT SearchResult {
+	std::string video_id;
+	std::string title;
+	std::string channel;
+	std::string channel_id;
+	std::string url;  // Full YouTube URL
+	long long duration_seconds = 0;
+	std::string duration_string;  // e.g., "3:33"
+	std::string thumbnail;
+	long long view_count = 0;
+	std::string upload_date;  // Relative or absolute
+	std::string description_snippet;
+};
+
+// Search options
+struct YTDLPP_EXPORT SearchOptions {
+	std::string query;
+	int max_results = 10;
+	bool sort_by_date = false;
+};
+
+// Download options - yt-dlp compatible
+struct YTDLPP_EXPORT DownloadOptions {
+	// Format selection
+	std::string format = "best";			  // -f, --format
+	std::optional<std::string> merge_format;  // --merge-output-format
+
+	// Output options
+	std::string output_template = "%(title)s [%(id)s].%(ext)s";	 // -o
+	std::string output_path = ".";								 // -P, --paths
+
+	// Audio extraction
+	bool extract_audio = false;	 // -x, --extract-audio
+	std::string audio_format;	 // --audio-format (mp3, m4a, opus, etc.)
+	int audio_quality = 5;		 // --audio-quality (0=best, 10=worst)
+
+	// Post-processing
+	bool embed_thumbnail = false;  // --embed-thumbnail
+	bool embed_metadata = false;   // --embed-metadata
+
+	// Display options
+	bool quiet = false;		// -q, --quiet
+	bool simulate = false;	// -s, --simulate
+	bool verbose = false;	// -v, --verbose
+
+	// Network
+	bool restrict_filenames = false;  // --restrict-filenames
+	bool no_mtime = false;			  // --no-mtime
 };
 
 }  // namespace ytdlpp

@@ -54,7 +54,7 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 		spdlog::error("Player code is empty");
 		return false;
 	}
-	spdlog::info("Scanning player script ({} bytes)...", player_code.size());
+	spdlog::debug("Scanning player script ({} bytes)...", player_code.size());
 
 	// =========================================================================
 	// SIGNATURE FUNCTION DETECTION (String-based - fastest approach)
@@ -95,7 +95,7 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 					sig_func_name_ =
 						player_code.substr(name_start, name_end - name_start);
 					found_sig = true;
-					spdlog::info(
+					spdlog::debug(
 						"Found signature function name: {}", sig_func_name_);
 				}
 			}
@@ -103,7 +103,7 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 	}
 
 	if (!found_sig) {
-		spdlog::error("Could not find signature function via string search.");
+		spdlog::debug("Could not find signature function via string search.");
 		return false;
 	}
 
@@ -116,33 +116,33 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 				player_code, n_match, get_n_param_pattern_1())) {
 			n_func_name_ = n_match[1].str();
 			found_n = true;
-			spdlog::info("Found n-parameter function name: {} (pattern 1)",
-						 n_func_name_);
+			spdlog::debug("Found n-parameter function name: {} (pattern 1)",
+						  n_func_name_);
 		} else if (boost::regex_search(
 					   player_code, n_match, get_n_param_pattern_2())) {
 			n_func_name_ = n_match[1].str();
 			found_n = true;
-			spdlog::info("Found n-parameter function name: {} (pattern 2)",
-						 n_func_name_);
+			spdlog::debug("Found n-parameter function name: {} (pattern 2)",
+						  n_func_name_);
 		} else if (boost::regex_search(
 					   player_code, n_match, get_n_param_pattern_3())) {
 			n_func_name_ = n_match[1].str();
 			found_n = true;
-			spdlog::info("Found n-parameter function name: {} (pattern 3)",
-						 n_func_name_);
+			spdlog::debug("Found n-parameter function name: {} (pattern 3)",
+						  n_func_name_);
 		}
 	} catch (const boost::regex_error &e) {
 		spdlog::error("Regex error during n-function search: {}", e.what());
 	}
 
 	if (!found_n) {
-		spdlog::warn(
+		spdlog::debug(
 			"Could not find n-function via regex. "
 			"N-parameter throttling mitigation unavailable.");
 	}
 
 	try {
-		spdlog::info("Extracting signature function body...");
+		spdlog::debug("Extracting signature function body...");
 		std::string sig_code = extract_function(player_code, sig_func_name_);
 
 		// Helper object search - regex on small string is very fast
@@ -150,22 +150,22 @@ bool SigDecipherer::load_functions(const std::string &player_code) {
 		boost::smatch helper_match;
 		if (boost::regex_search(sig_code, helper_match, get_helper_pattern())) {
 			std::string helper_name = helper_match[1].str();
-			spdlog::info("Found signature helper object: {}", helper_name);
+			spdlog::debug("Found signature helper object: {}", helper_name);
 			helper_code = extract_helper_object(player_code, helper_name);
 		}
 
 		std::string n_code;
 		if (found_n) {
-			spdlog::info("Extracting n-function body...");
+			spdlog::debug("Extracting n-function body...");
 			n_code = extract_function(player_code, n_func_name_);
 		}
 
 		std::string full_script = helper_code + "\n" + sig_code + "\n" + n_code;
-		spdlog::info("Loading extracted script into JS engine ({} bytes)",
-					 full_script.length());
+		spdlog::debug("Loading extracted script into JS engine ({} bytes)",
+					  full_script.length());
 		auto eval_res = js_.evaluate(full_script);
 		if (eval_res.has_error()) {
-			spdlog::error("Evaluating script failed");
+			spdlog::debug("Evaluating script failed");
 			return false;
 		}
 
@@ -191,7 +191,8 @@ std::string SigDecipherer::decipher_signature(const std::string &signature) {
 	if (sig_func_name_.empty()) return signature;
 	auto res = js_.call_function(sig_func_name_, {signature});
 	if (res.has_value()) return res.value();
-	spdlog::error("Signature decipher failed: {}", res.error().message());
+	// Use debug level - ANDROID/iOS clients don't need signature deciphering
+	spdlog::debug("Signature decipher failed: {}", res.error().message());
 	return signature;
 }
 
@@ -199,7 +200,8 @@ std::string SigDecipherer::transform_n(const std::string &n) {
 	if (n_func_name_.empty()) return n;
 	auto res = js_.call_function(n_func_name_, {n});
 	if (res.has_value()) return res.value();
-	spdlog::warn(
+	// Use debug level - expected to fail for some clients
+	spdlog::debug(
 		"N-parameter transformation failed: {}", res.error().message());
 	return n;
 }

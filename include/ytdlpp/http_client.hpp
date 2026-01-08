@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ytdlpp/ytdlpp_export.h>
+
 #include <boost/asio/any_completion_executor.hpp>
 #include <boost/asio/any_completion_handler.hpp>
 #include <boost/asio/any_io_executor.hpp>
@@ -12,17 +14,18 @@
 
 #include "result.hpp"
 
+
 namespace ytdlpp::net {
 
 namespace asio = boost::asio;
 
-struct HttpResponse {
+struct YTDLPP_EXPORT HttpResponse {
 	int status_code;
 	std::string body;
 	std::map<std::string, std::string> headers;
 };
 
-class HttpClient {
+class YTDLPP_EXPORT HttpClient {
    public:
 	HttpClient(const HttpClient &) = delete;
 	HttpClient &operator=(const HttpClient &) = delete;

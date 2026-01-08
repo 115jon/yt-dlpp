@@ -81,7 +81,6 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			return complete(outcome::failure(errc::invalid_url));
 		}
 
-		spdlog::info("Extracting URL: {}", url);
 		spdlog::info("{}: Downloading webpage", video_id);
 
 		auto self = shared_from_this();
@@ -95,13 +94,13 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 	void on_script(std::optional<std::string> content) {
 		if (cancelled) return;
 		if (content) {
-			spdlog::info("[jsc:quickjs] Solving JS challenges using quickjs");
+			spdlog::debug("[jsc:quickjs] Solving JS challenges using quickjs");
 			if (!decipherer.load_functions(*content)) {
-				spdlog::warn(
+				spdlog::debug(
 					"Failed to load decipher functions. Downloads may fail.");
 			}
 		} else {
-			spdlog::warn(
+			spdlog::debug(
 				"Could not download player script. Signature deciphering "
 				"unavailable.");
 		}
@@ -685,6 +684,328 @@ void Extractor::async_process_impl(
 	CompletionExecutor handler_ex) {
 	m_impl->async_process(
 		std::move(url), std::move(handler), std::move(handler_ex));
+}
+
+// =============================================================================
+// YouTube Search Implementation
+// =============================================================================
+
+// Search params from yt-dlp (base64 encoded protobuf)
+static constexpr const char *SEARCH_PARAMS_VIDEOS =
+	"EgIQAfABAQ==";	 // Videos only
+static constexpr const char *SEARCH_PARAMS_DATE =
+	"CAISAhAB8AEB";	 // Videos, sorted by date
+
+// Parse duration string like "3:33" or "1:23:45" into seconds
+static long long parse_duration_string(const std::string &duration_str) {
+	if (duration_str.empty()) return 0;
+
+	std::vector<long long> parts;
+	long long current = 0;
+
+	for (char c : duration_str) {
+		if (c >= '0' && c <= '9') {
+			current = current * 10 + (c - '0');
+		} else if (c == ':') {
+			parts.push_back(current);
+			current = 0;
+		}
+	}
+	parts.push_back(current);
+
+	// Convert to seconds: e.g., [3, 33] -> 3*60 + 33 = 213
+	long long seconds = 0;
+	for (size_t i = 0; i < parts.size(); ++i) {
+		long long multiplier = 1;
+		for (size_t j = i + 1; j < parts.size(); ++j) { multiplier *= 60; }
+		seconds += parts[i] * multiplier;
+	}
+	return seconds;
+}
+
+// Convert seconds to duration string
+static std::string seconds_to_duration_string(long long seconds) {
+	if (seconds <= 0) return "0:00";
+
+	long long hours = seconds / 3600;
+	long long minutes = (seconds % 3600) / 60;
+	long long secs = seconds % 60;
+
+	std::string result;
+	if (hours > 0) {
+		result = std::to_string(hours) + ":";
+		if (minutes < 10) result += "0";
+	}
+	result += std::to_string(minutes) + ":";
+	if (secs < 10) result += "0";
+	result += std::to_string(secs);
+	return result;
+}
+
+// Extract search results from Innertube response
+static std::vector<SearchResult> extract_search_results(
+	const nlohmann::json &response, int max_results) {
+	std::vector<SearchResult> results;
+
+	// Navigate to the search results content
+	auto contents = utils::traverse_obj<nlohmann::json>(
+		response, {"contents", "twoColumnSearchResultsRenderer",
+				   "primaryContents", "sectionListRenderer", "contents"});
+
+	if (!contents || !contents->is_array()) return results;
+
+	for (const auto &section : *contents) {
+		auto item_section = utils::traverse_obj<nlohmann::json>(
+			section, {"itemSectionRenderer", "contents"});
+		if (!item_section || !item_section->is_array()) continue;
+
+		for (const auto &item : *item_section) {
+			if (static_cast<int>(results.size()) >= max_results) break;
+
+			// Check for videoRenderer
+			auto video_renderer =
+				utils::traverse_obj<nlohmann::json>(item, {"videoRenderer"});
+			if (!video_renderer) continue;
+
+			SearchResult result;
+
+			// Video ID
+			if (auto vid = utils::traverse_obj<std::string>(
+					*video_renderer, {"videoId"})) {
+				result.video_id = *vid;
+				result.url = "https://www.youtube.com/watch?v=" + *vid;
+			} else {
+				continue;  // Skip if no video ID
+			}
+
+			// Title
+			if (auto title_runs = utils::traverse_obj<nlohmann::json>(
+					*video_renderer, {"title", "runs"})) {
+				if (title_runs->is_array() && !title_runs->empty()) {
+					if (auto text = utils::traverse_obj<std::string>(
+							(*title_runs)[0], {"text"})) {
+						result.title = *text;
+					}
+				}
+			}
+
+			// Channel
+			if (auto channel_runs = utils::traverse_obj<nlohmann::json>(
+					*video_renderer, {"ownerText", "runs"})) {
+				if (channel_runs->is_array() && !channel_runs->empty()) {
+					if (auto text = utils::traverse_obj<std::string>(
+							(*channel_runs)[0], {"text"})) {
+						result.channel = *text;
+					}
+					// Channel ID from navigation endpoint
+					if (auto browse_id = utils::traverse_obj<std::string>(
+							(*channel_runs)[0],
+							{"navigationEndpoint", "browseEndpoint",
+							 "browseId"})) {
+						result.channel_id = *browse_id;
+					}
+				}
+			}
+
+			// Duration
+			if (auto duration_text = utils::traverse_obj<std::string>(
+					*video_renderer, {"lengthText", "simpleText"})) {
+				result.duration_string = *duration_text;
+				result.duration_seconds = parse_duration_string(*duration_text);
+			}
+
+			// Thumbnail
+			if (auto thumbs = utils::traverse_obj<nlohmann::json>(
+					*video_renderer, {"thumbnail", "thumbnails"})) {
+				if (thumbs->is_array() && !thumbs->empty()) {
+					if (auto url = utils::traverse_obj<std::string>(
+							thumbs->back(), {"url"})) {
+						result.thumbnail = *url;
+					}
+				}
+			}
+
+			// View count
+			if (auto view_count_text = utils::traverse_obj<std::string>(
+					*video_renderer, {"viewCountText", "simpleText"})) {
+				// Parse "1,234,567 views" -> 1234567
+				std::string view_str;
+				for (char c : *view_count_text) {
+					if (c >= '0' && c <= '9') view_str += c;
+				}
+				if (!view_str.empty()) {
+					try {
+						result.view_count = std::stoll(view_str);
+					} catch (...) {}
+				}
+			}
+
+			// Published time
+			if (auto published = utils::traverse_obj<std::string>(
+					*video_renderer, {"publishedTimeText", "simpleText"})) {
+				result.upload_date = *published;
+			}
+
+			// Description snippet
+			if (auto desc_runs = utils::traverse_obj<nlohmann::json>(
+					*video_renderer,
+					{"detailedMetadataSnippets", 0, "snippetText", "runs"})) {
+				if (desc_runs->is_array()) {
+					for (const auto &run : *desc_runs) {
+						if (auto text = utils::traverse_obj<std::string>(
+								run, {"text"})) {
+							result.description_snippet += *text;
+						}
+					}
+				}
+			}
+
+			results.push_back(std::move(result));
+		}
+		if (static_cast<int>(results.size()) >= max_results) break;
+	}
+
+	return results;
+}
+
+void Extractor::async_search_impl(
+	SearchOptions options,
+	asio::any_completion_handler<void(Result<std::vector<SearchResult>>)>
+		handler,
+	CompletionExecutor handler_ex) {
+	auto http = m_impl->http;
+
+	spdlog::debug("Searching YouTube: \"{}\" (max: {})", options.query,
+				  options.max_results);
+
+	// Build search request using Innertube context
+	auto context = Innertube::CLIENT_WEB;
+	nlohmann::json payload = Innertube::build_context(context);
+	payload["query"] = options.query;
+	payload["params"] =
+		options.sort_by_date ? SEARCH_PARAMS_DATE : SEARCH_PARAMS_VIDEOS;
+
+	auto headers = Innertube::get_headers(context);
+
+	http->async_post(
+		"https://www.youtube.com/youtubei/v1/search", payload.dump(),
+		[handler = std::move(handler), handler_ex,
+		 options](Result<net::HttpResponse> result) mutable {
+			if (result.has_error()) {
+				asio::dispatch(handler_ex, [handler = std::move(handler),
+											err = result.error()]() mutable {
+					handler(outcome::failure(err));
+				});
+				return;
+			}
+
+			auto &resp = result.value();
+			if (resp.status_code != 200) {
+				asio::dispatch(
+					handler_ex, [handler = std::move(handler)]() mutable {
+						handler(outcome::failure(errc::request_failed));
+					});
+				return;
+			}
+
+			try {
+				auto json = nlohmann::json::parse(resp.body);
+				auto results =
+					extract_search_results(json, options.max_results);
+				spdlog::debug("Search found {} results", results.size());
+
+				asio::dispatch(
+					handler_ex, [handler = std::move(handler),
+								 results = std::move(results)]() mutable {
+						handler(outcome::success(std::move(results)));
+					});
+			} catch (...) {
+				asio::dispatch(
+					handler_ex, [handler = std::move(handler)]() mutable {
+						handler(outcome::failure(errc::json_parse_error));
+					});
+			}
+		},
+		headers);
+}
+
+std::optional<SearchOptions> parse_search_url(std::string_view url) {
+	// Pattern: ytsearch[N|date|all]:query
+	// Examples: ytsearch:hello, ytsearch5:hello, ytsearchdate:hello,
+	// ytsearchall:hello
+
+	std::string_view prefix = "ytsearch";
+	if (url.substr(0, prefix.size()) != prefix) { return std::nullopt; }
+
+	std::string_view remainder = url.substr(prefix.size());
+
+	SearchOptions opts;
+	opts.max_results = 1;  // Default for plain ytsearch:
+	opts.sort_by_date = false;
+
+	// Find the colon
+	auto colon_pos = remainder.find(':');
+	if (colon_pos == std::string_view::npos) {
+		return std::nullopt;  // No query part
+	}
+
+	std::string_view modifier = remainder.substr(0, colon_pos);
+	opts.query = std::string(remainder.substr(colon_pos + 1));
+
+	if (opts.query.empty()) { return std::nullopt; }
+
+	if (modifier.empty()) {
+		opts.max_results = 1;
+	} else if (modifier == "all") {
+		opts.max_results = 100;	 // Reasonable max
+	} else if (modifier == "date") {
+		opts.max_results = 10;
+		opts.sort_by_date = true;
+	} else {
+		// Try to parse as number
+		int n = 0;
+		for (char c : modifier) {
+			if (c >= '0' && c <= '9') {
+				n = n * 10 + (c - '0');
+			} else {
+				// Check for "date" suffix like "5date"
+				std::string mod_str(modifier);
+				if (mod_str.find("date") != std::string::npos) {
+					opts.sort_by_date = true;
+					// Extract number before "date"
+					auto date_pos = mod_str.find("date");
+					if (date_pos > 0) {
+						try {
+							n = std::stoi(mod_str.substr(0, date_pos));
+						} catch (...) { n = 1; }
+					}
+				} else {
+					return std::nullopt;  // Invalid modifier
+				}
+				break;
+			}
+		}
+		if (n <= 0) n = 1;
+		opts.max_results = n;
+	}
+
+	return opts;
+}
+
+void to_json(nlohmann::json &j, const SearchResult &r) {
+	j = nlohmann::json{
+		{"id", r.video_id},
+		{"title", r.title},
+		{"channel", r.channel},
+		{"channel_id", r.channel_id},
+		{"url", r.url},
+		{"duration", r.duration_seconds},
+		{"duration_string", r.duration_string},
+		{"thumbnail", r.thumbnail},
+		{"view_count", r.view_count},
+		{"upload_date", r.upload_date},
+		{"description", r.description_snippet},
+		{"_type", "video"}};
 }
 
 void to_json(nlohmann::json &j, const VideoFormat &f) {

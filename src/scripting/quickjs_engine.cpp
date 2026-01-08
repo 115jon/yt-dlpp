@@ -57,7 +57,7 @@ Result<void> JsEngine::evaluate(const std::string &code) {
 	if (JS_IsException(ret)) {
 		std::string err = get_exception_str();
 		JS_FreeValue(ctx_, ret);
-		spdlog::error("JS Evaluation failed: {}", err);
+		spdlog::debug("JS Evaluation failed: {}", err);
 		return outcome::failure(errc::extraction_failed);
 	}
 
@@ -145,7 +145,7 @@ Result<void> JsEngine::evaluate_with_cache(
 		if (JS_IsException(ret)) {
 			std::string err = get_exception_str();
 			JS_FreeValue(ctx_, ret);
-			spdlog::error("JS Evaluation failed: {}", err);
+			spdlog::debug("JS Evaluation failed: {}", err);
 			return outcome::failure(errc::extraction_failed);
 		}
 		JS_FreeValue(ctx_, ret);
@@ -219,7 +219,8 @@ Result<std::string> JsEngine::call_function(
 
 	if (!JS_IsFunction(ctx_, func_obj)) {
 		JS_FreeValue(ctx_, func_obj);
-		spdlog::error("Function not found or not a function: {}", func_name);
+		// Use debug level - expected when deciphering not needed/loaded
+		spdlog::debug("Function not found or not a function: {}", func_name);
 		return outcome::failure(errc::extraction_failed);
 	}
 

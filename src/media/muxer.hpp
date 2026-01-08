@@ -1,10 +1,12 @@
 #pragma once
 
+#include <ytdlpp/ytdlpp_export.h>
+
 #include <string>
 
 namespace ytdlpp::media {
 
-class Muxer {
+class YTDLPP_EXPORT Muxer {
    public:
 	// Merges a video file and an audio file into a single output file.
 	// Returns true on success.

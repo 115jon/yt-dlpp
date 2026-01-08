@@ -1,7 +1,10 @@
 {
-  "name": "yt-dlpp",
+  "name": "ytdlpp",
   "version": "0.1.0",
   "description": "A C++ YouTube video/audio downloader library",
+  "homepage": "https://github.com/yourusername/yt-dlpp",
+  "license": "MIT",
+  "supports": "!uwp",
   "dependencies": [
     {
       "name": "certify",
@@ -11,11 +14,19 @@
     "nlohmann-json",
     "quickjs-ng",
     "spdlog",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    },
     "zlib"
   ],
   "features": {
     "boost": {
-      "description": "Build Boost from source via vcpkg (disable to use system Boost)",
+      "description": "Build Boost from source (disable for system Boost)",
       "dependencies": [
         "boost-asio",
         "boost-beast",
@@ -36,7 +47,7 @@
       ]
     },
     "openssl": {
-      "description": "Build OpenSSL from source via vcpkg (disable to use system OpenSSL)",
+      "description": "Build OpenSSL from source (disable for system OpenSSL)",
       "dependencies": [
         {
           "name": "certify",
@@ -48,7 +59,7 @@
       ]
     },
     "ffmpeg": {
-      "description": "Build FFmpeg from source via vcpkg (disable to use system FFmpeg)",
+      "description": "Build FFmpeg from source (disable for system FFmpeg)",
       "dependencies": [
         {
           "name": "ffmpeg",
@@ -63,10 +74,5 @@
         }
       ]
     }
-  },
-  "default-features": [
-    "boost",
-    "openssl",
-    "ffmpeg"
-  ]
+  }
 }

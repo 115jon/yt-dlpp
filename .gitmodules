@@ -1,3 +1,0 @@
-[submodule "3rdparty/certify"]
-	path = 3rdparty/certify
-	url = https://github.com/115jon/certify.git
