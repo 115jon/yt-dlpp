@@ -13,12 +13,16 @@ find_dependency(qjs CONFIG REQUIRED)
 find_dependency(certify CONFIG REQUIRED)
 find_dependency(ZLIB REQUIRED)
 
-# FFmpeg - pkg-config for system, CONFIG for vcpkg
-find_dependency(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND)
-  pkg_check_modules(FFMPEG QUIET libavcodec libavformat libswresample libswscale)
+# FFmpeg - try CMake CONFIG mode first (vcpkg), then fallback to pkg-config
+find_package(FFMPEG QUIET CONFIG COMPONENTS avcodec avformat swresample swscale)
+if(NOT FFMPEG_FOUND)
+  find_package(PkgConfig QUIET)
+  if(PKG_CONFIG_FOUND)
+    pkg_check_modules(FFMPEG QUIET IMPORTED_TARGET libavcodec libavformat libswresample libswscale)
+  endif()
 endif()
 if(NOT FFMPEG_FOUND)
+  # Final fallback - MODULE mode
   find_dependency(FFMPEG REQUIRED COMPONENTS avcodec avformat swresample swscale)
 endif()
 
