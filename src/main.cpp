@@ -265,14 +265,44 @@ void run_app(asio::io_context &ioc,
 				continue;
 			}
 
+			// Select format and show info line
+			auto streams =
+				ytdlpp::Downloader::select_streams(info, opts.format);
+			if (!streams.video && !streams.audio) {
+				fmt::println(stderr, "ERROR: No matching format for: {}",
+							 opts.format);
+				continue;
+			}
+
+			std::string format_str;
+			if (streams.video && streams.audio &&
+				streams.video != streams.audio) {
+				format_str = std::to_string(streams.video->itag) + "+" +
+							 std::to_string(streams.audio->itag);
+			} else if (streams.video) {
+				format_str = std::to_string(streams.video->itag);
+			} else if (streams.audio) {
+				format_str = std::to_string(streams.audio->itag);
+			}
+
+			if (!opts.quiet) {
+				log_info(fmt::format("{}: Downloading 1 format(s): {}",
+									 info.id, format_str));
+			}
+
+			// Handle --simulate (don't download)
+			if (opts.simulate) { continue; }
+
 			// Otherwise download
 			ytdlpp::Downloader downloader(http);
 			auto download_result = downloader.async_download(
 				info, opts.format, opts.merge_format,
-				[](const std::string &status,
-				   const ytdlpp::DownloadProgress &prog) {
-					std::cout << "\r" << status << ": " << prog.percentage
-							  << "%   " << std::flush;
+				[&opts](const std::string &status,
+						const ytdlpp::DownloadProgress &prog) {
+					if (!opts.quiet) {
+						std::cout << "\r" << status << ": " << prog.percentage
+								  << "%   " << std::flush;
+					}
 				},
 				yield);
 
@@ -280,8 +310,10 @@ void run_app(asio::io_context &ioc,
 				fmt::println(stderr, "\nERROR: Download failed: {}",
 							 download_result.error().message());
 			} else {
-				fmt::println(
-					"\n[download] 100%% of {}", download_result.value());
+				if (!opts.quiet) {
+					fmt::println("\n[download] 100%% of {}",
+								 download_result.value());
+				}
 			}
 		}
 

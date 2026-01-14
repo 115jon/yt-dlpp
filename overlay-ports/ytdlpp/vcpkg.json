@@ -12,7 +12,7 @@
     },
     "fmt",
     "nlohmann-json",
-    "quickjs-ng",
+    "v8",
     "spdlog",
     {
       "name": "vcpkg-cmake",

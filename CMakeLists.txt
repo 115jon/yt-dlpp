@@ -65,22 +65,15 @@ endif()
 # -----------------------------------------------------------------------------
 # Boost Configuration
 # -----------------------------------------------------------------------------
-# By default, uses vcpkg's Boost. Set YTDLPP_USE_SYSTEM_BOOST=ON to use
-# system-installed Boost instead (much faster for CI/Docker builds).
-# -----------------------------------------------------------------------------
-
-option(YTDLPP_USE_SYSTEM_BOOST "Use system-installed Boost instead of vcpkg" ON)
+option(YTDLPP_USE_SYSTEM_BOOST "Use system-installed Boost instead of vcpkg"
+       OFF)
 
 if(YTDLPP_USE_SYSTEM_BOOST)
-  # Use CMake's FindBoost module for system Boost
   set(Boost_USE_STATIC_LIBS OFF)
   set(Boost_USE_MULTITHREADED ON)
   find_package(Boost 1.86 REQUIRED COMPONENTS filesystem program_options regex)
-  # Header-only components (asio, beast, url, charconv, scope_exit) don't need
-  # COMPONENTS
   message(STATUS "Using system Boost: ${Boost_VERSION}")
 else()
-  # Use vcpkg's Boost (CONFIG mode)
   find_package(
     Boost REQUIRED
     COMPONENTS asio
@@ -97,26 +90,16 @@ find_package(certify CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
-find_package(qjs CONFIG REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(v8 CONFIG REQUIRED) # V8 Dependency
 
 # -----------------------------------------------------------------------------
 # FFmpeg Configuration
 # -----------------------------------------------------------------------------
-# By default, uses vcpkg's FFmpeg. Set YTDLPP_USE_SYSTEM_FFMPEG=ON to use
-# system-installed FFmpeg instead (much faster for CI/Docker builds).
-#
-# Usage: cmake -B build -DYTDLPP_USE_SYSTEM_FFMPEG=ON
-#
-# For vcpkg without FFmpeg: vcpkg install --x-no-default-features Or: vcpkg
-# install --x-feature=<other-features-you-want>
-# -----------------------------------------------------------------------------
-
 option(YTDLPP_USE_SYSTEM_FFMPEG "Use system-installed FFmpeg instead of vcpkg"
        OFF)
 
 if(YTDLPP_USE_SYSTEM_FFMPEG)
-  # Use pkg-config to find system FFmpeg
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(
     LIBAV
@@ -132,7 +115,6 @@ if(YTDLPP_USE_SYSTEM_FFMPEG)
   set(FFMPEG_INCLUDE_DIRS ${LIBAV_INCLUDE_DIRS})
   message(STATUS "Using system FFmpeg: ${LIBAV_LINK_LIBRARIES}")
 else()
-  # Use vcpkg's FFmpeg (requires 'ffmpeg' feature enabled in vcpkg.json)
   find_package(FFMPEG REQUIRED COMPONENTS avcodec avformat swresample swscale)
   message(STATUS "Using vcpkg FFmpeg: ${FFMPEG_LIBRARIES}")
 endif()
@@ -145,7 +127,9 @@ add_library(
   yt-dlpp-lib
   src/error.cpp
   src/net/http_client.cpp
-  src/scripting/quickjs_engine.cpp
+  src/scripting/js_engine_v8.cpp # V8 Implementation
+  src/scripting/native_js_solver.cpp
+  src/ejs_solver.cpp
   src/youtube/innertube.cpp
   src/youtube/extractor.cpp
   src/youtube/player_script.cpp
@@ -228,7 +212,9 @@ else()
       target_compile_options(yt-dlpp-lib PRIVATE -ffast-math)
     endif()
 
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64|ARM|ARM64")
+    # Only use -march=native when NOT cross-compiling (host == target)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64|ARM|ARM64"
+       AND NOT CMAKE_CROSSCOMPILING)
       target_compile_options(yt-dlpp-lib PRIVATE -march=native -mtune=native)
     endif()
 
@@ -243,7 +229,7 @@ endif()
 # -----------------------------------------------------------------------------
 
 if(YTDLPP_USE_SYSTEM_BOOST)
-  # System Boost: add include dirs for header-only libs
+  # System Boost
   target_include_directories(yt-dlpp-lib PUBLIC ${Boost_INCLUDE_DIRS})
   target_link_libraries(
     yt-dlpp-lib
@@ -252,12 +238,16 @@ if(YTDLPP_USE_SYSTEM_BOOST)
             fmt::fmt
             nlohmann_json::nlohmann_json
             spdlog::spdlog
-            qjs
+            spdlog::spdlog
+            $<$<PLATFORM_ID:Linux>:-Wl,--start-group>
+            v8::v8
+            $<$<PLATFORM_ID:Linux>:-Wl,--end-group>
+            certify::core
             certify::core
             ZLIB::ZLIB
             ${FFMPEG_LIBRARIES})
 else()
-  # vcpkg Boost: all libs have explicit targets
+  # vcpkg Boost
   target_link_libraries(
     yt-dlpp-lib
     PUBLIC Boost::asio
@@ -268,10 +258,21 @@ else()
             fmt::fmt
             nlohmann_json::nlohmann_json
             spdlog::spdlog
-            qjs
+            spdlog::spdlog
+            $<$<PLATFORM_ID:Linux>:-Wl,--start-group>
+            v8::v8
+            $<$<PLATFORM_ID:Linux>:-Wl,--end-group>
+            certify::core
             certify::core
             ZLIB::ZLIB
             ${FFMPEG_LIBRARIES})
+endif()
+
+if(UNIX AND NOT APPLE)
+  target_link_libraries(yt-dlpp-lib PRIVATE "-Wl,--start-group" v8::v8
+                                            "-Wl,--end-group")
+else()
+  target_link_libraries(yt-dlpp-lib PRIVATE v8::v8)
 endif()
 
 # =============================================================================
@@ -280,11 +281,13 @@ endif()
 
 if(YTDLPP_BUILD_CLI)
   add_executable(yt-dlpp src/main.cpp)
-
   target_include_directories(yt-dlpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-
   target_link_libraries(yt-dlpp PRIVATE yt-dlpp-lib fmt::fmt spdlog::spdlog
                                         Boost::program_options)
+
+  if(MSVC)
+    target_link_options(yt-dlpp PRIVATE /STACK:16777216) # 16MB stack
+  endif()
 
   if(MSVC)
     target_compile_options(yt-dlpp PRIVATE /W4 /bigobj)
@@ -302,10 +305,6 @@ if(YTDLPP_BUILD_CLI)
     endif()
   endif()
 endif()
-
-# =============================================================================
-# EXAMPLES
-# =============================================================================
 
 if(YTDLPP_BUILD_EXAMPLES)
   add_subdirectory(examples)

@@ -32,14 +32,18 @@ class PlayerScript {
 	using ScriptCallback =
 		boost::asio::any_completion_handler<void(std::optional<std::string>)>;
 
+	using WebpageCallback = std::function<void(const std::string &)>;
+
 	// Async fetch with bytecode support
 	// Returns script content and caches bytecode for next load
-	void async_fetch(const std::string &video_id, ScriptCallback cb);
+	void async_fetch(const std::string &video_id, ScriptCallback cb,
+					 WebpageCallback on_webpage = nullptr);
 
 	std::string get_captured_player_url() const { return player_url_; }
 
 	// Cache control
 	static void set_cache_directory(const std::filesystem::path &dir);
+	static std::filesystem::path get_cache_directory();
 	static void clear_cache();
 
 	// Get cached bytecode for a player (used by SigDecipherer)

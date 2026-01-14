@@ -1,0 +1,32 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f49a052..9cb540c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -149,6 +149,7 @@ xoption(QJS_ENABLE_ASAN "Enable AddressSanitizer (ASan)" OFF)
+ xoption(QJS_ENABLE_MSAN "Enable MemorySanitizer (MSan)" OFF)
+ xoption(QJS_ENABLE_TSAN "Enable ThreadSanitizer (TSan)" OFF)
+ xoption(QJS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer (UBSan)" OFF)
++xoption(CONFIG_DISABLE_STACK_CHECK "Disable stack overflow check for deep recursion" OFF)
+ 
+ if(QJS_ENABLE_ASAN)
+ message(STATUS "Building with ASan")
+diff --git a/quickjs.c b/quickjs.c
+index a6099dc..9492563 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -1819,9 +1819,15 @@ static inline uintptr_t js_get_stack_pointer(void)
+ 
+ static inline bool js_check_stack_overflow(JSRuntime *rt, size_t alloca_size)
+ {
++#ifdef CONFIG_DISABLE_STACK_CHECK
++    (void)rt;
++    (void)alloca_size;
++    return false;
++#else
+     uintptr_t sp;
+     sp = js_get_stack_pointer() - alloca_size;
+     return unlikely(sp < rt->stack_limit);
++#endif
+ }
+ 
+ JSRuntime *JS_NewRuntime2(const JSMallocFunctions *mf, void *opaque)

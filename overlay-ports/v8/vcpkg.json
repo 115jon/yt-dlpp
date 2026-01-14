@@ -1,0 +1,23 @@
+{
+  "name": "v8",
+  "version-string": "0.1.4",
+  "description": "V8 JavaScript Engine (CMake wrapper)",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "default-features": [
+    "monolithic"
+  ],
+  "features": {
+    "monolithic": {
+      "description": "Build a single monolithic library instead of separate components"
+    }
+  }
+}

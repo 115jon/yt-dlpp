@@ -14,7 +14,6 @@
 
 #include "result.hpp"
 
-
 namespace ytdlpp::net {
 
 namespace asio = boost::asio;
@@ -34,6 +33,9 @@ class YTDLPP_EXPORT HttpClient {
 	~HttpClient();
 
 	explicit HttpClient(asio::any_io_executor ex);
+
+	/// Shutdown the client, cancelling pending operations and clearing pools.
+	void shutdown();
 
 	[[nodiscard]] asio::any_io_executor get_executor() const;
 
@@ -116,6 +118,8 @@ class YTDLPP_EXPORT HttpClient {
 	}
 
    private:
+	friend class RequestSession;
+	friend class AsyncDownloadSession;
 	struct Impl;
 
 	void async_get_impl(

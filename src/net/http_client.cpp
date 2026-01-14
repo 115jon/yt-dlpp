@@ -264,6 +264,13 @@ static DnsCache &get_dns_cache() {
 	return instance;
 }
 
+// Forward declaration for session cancellation interface
+class IActiveSession {
+   public:
+	virtual ~IActiveSession() = default;
+	virtual void cancel() = 0;
+};
+
 struct HttpClient::Impl {
 	asio::any_io_executor ex;
 	ssl::context ssl_ctx;
@@ -273,6 +280,11 @@ struct HttpClient::Impl {
 	std::unordered_map<std::string, std::vector<PooledConnection>> conn_pool_;
 	static constexpr auto kConnectionTimeout = std::chrono::seconds(30);
 	static constexpr size_t kMaxPoolSize = 4;
+
+	// Active session tracking for cancellation
+	std::mutex sessions_mutex_;
+	std::vector<std::weak_ptr<IActiveSession>> active_sessions_;
+	std::atomic<bool> shutdown_requested_{false};
 
 	Impl(asio::any_io_executor e)
 		: ex(std::move(e)), ssl_ctx(ssl::context::tlsv12_client) {
@@ -290,6 +302,46 @@ struct HttpClient::Impl {
 		}
 
 		boost::certify::enable_native_https_server_verification(ssl_ctx);
+	}
+
+	void register_session(std::weak_ptr<IActiveSession> session) {
+		std::lock_guard lock(sessions_mutex_);
+		// Cleanup expired sessions while we're here
+		active_sessions_.erase(
+			std::remove_if(active_sessions_.begin(), active_sessions_.end(),
+						   [](const auto &wp) { return wp.expired(); }),
+			active_sessions_.end());
+		active_sessions_.push_back(std::move(session));
+	}
+
+	void shutdown() {
+		shutdown_requested_.store(true, std::memory_order_release);
+
+		// Cancel all active sessions
+		{
+			std::lock_guard lock(sessions_mutex_);
+			for (auto &wp : active_sessions_) {
+				if (auto sp = wp.lock()) { sp->cancel(); }
+			}
+			active_sessions_.clear();
+		}
+
+		// Close all pooled connections
+		{
+			std::lock_guard lock(pool_mutex_);
+			for (auto &[key, conns] : conn_pool_) {
+				for (auto &conn : conns) {
+					if (conn.stream) {
+						beast::get_lowest_layer(*conn.stream).cancel();
+					}
+				}
+			}
+			conn_pool_.clear();
+		}
+	}
+
+	[[nodiscard]] bool is_shutdown() const {
+		return shutdown_requested_.load(std::memory_order_acquire);
 	}
 
 	// Get a pooled connection or nullptr if none available
@@ -476,18 +528,31 @@ HttpClient &HttpClient::operator=(HttpClient &&) noexcept = default;
 
 asio::any_io_executor HttpClient::get_executor() const { return m_impl->ex; }
 
-class RequestSession : public std::enable_shared_from_this<RequestSession> {
+void HttpClient::shutdown() {
+	if (m_impl) { m_impl->shutdown(); }
+}
+
+class RequestSession : public IActiveSession,
+					   public std::enable_shared_from_this<RequestSession> {
    public:
 	using CompletionExecutor = asio::any_completion_executor;
 
-	RequestSession(const asio::any_io_executor &ex, ssl::context &ctx,
+	RequestSession(HttpClient::Impl *impl, const asio::any_io_executor &ex,
+				   ssl::context &ctx,
 				   asio::any_completion_handler<void(Result<HttpResponse>)> cb,
 				   CompletionExecutor handler_ex)
-		: strand_(asio::make_strand(ex)),
+		: impl_(impl),
+		  strand_(asio::make_strand(ex)),
 		  resolver_(strand_),
 		  stream_(strand_, ctx),
 		  cb_(std::move(cb)),
 		  handler_ex_(std::move(handler_ex)) {}
+
+	void cancel() override {
+		// Cancel resolver and stream operations
+		resolver_.cancel();
+		beast::get_lowest_layer(stream_).cancel();
+	}
 
 	void run(http::verb method, const std::string &url_str,
 			 const std::string &body_content,
@@ -633,6 +698,7 @@ class RequestSession : public std::enable_shared_from_this<RequestSession> {
 	}
 
    private:
+	HttpClient::Impl *impl_;
 	asio::strand<asio::any_io_executor> strand_;
 	tcp::resolver resolver_;
 	beast::ssl_stream<beast::tcp_stream> stream_;
@@ -649,9 +715,11 @@ void HttpClient::async_get_impl(
 	std::string url, std::map<std::string, std::string> headers,
 	asio::any_completion_handler<void(Result<HttpResponse>)> handler,
 	CompletionExecutor handler_ex) {
-	std::make_shared<RequestSession>(
-		m_impl->ex, m_impl->ssl_ctx, std::move(handler), std::move(handler_ex))
-		->run(http::verb::get, url, "", headers);
+	auto session = std::make_shared<RequestSession>(
+		m_impl.get(), m_impl->ex, m_impl->ssl_ctx, std::move(handler),
+		std::move(handler_ex));
+	m_impl->register_session(session);
+	session->run(http::verb::get, url, "", headers);
 }
 
 void HttpClient::async_post_impl(
@@ -659,9 +727,11 @@ void HttpClient::async_post_impl(
 	std::map<std::string, std::string> headers,
 	asio::any_completion_handler<void(Result<HttpResponse>)> handler,
 	CompletionExecutor handler_ex) {
-	std::make_shared<RequestSession>(
-		m_impl->ex, m_impl->ssl_ctx, std::move(handler), std::move(handler_ex))
-		->run(http::verb::post, url, body, headers);
+	auto session = std::make_shared<RequestSession>(
+		m_impl.get(), m_impl->ex, m_impl->ssl_ctx, std::move(handler),
+		std::move(handler_ex));
+	m_impl->register_session(session);
+	session->run(http::verb::post, url, body, headers);
 }
 
 class AsyncDownloadSession

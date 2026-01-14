@@ -11,15 +11,10 @@ namespace ytdlpp::youtube {
 
 namespace fs = std::filesystem;
 
-// =============================================================================
-// OPTIMIZED STATIC REGEX PATTERNS
-// =============================================================================
-// Pre-compiled regex patterns for player URL extraction.
-// Compiled once at program startup with std::regex::optimize for better
-// matching performance on large HTML pages (typically 500KB+).
-// =============================================================================
-
 namespace {
+
+// Pre-compiled regex patterns for player URL extraction (compiled once at
+// startup)
 
 struct PlayerUrlRegexes {
 	std::regex script_src;
@@ -48,12 +43,7 @@ const PlayerUrlRegexes &get_player_url_regexes() {
 	return instance;
 }
 
-// =============================================================================
-// STRING-BASED FALLBACK EXTRACTION
-// =============================================================================
-// For simple patterns, string search can be 10-50x faster than regex.
-// These are used as primary methods before falling back to regex.
-// =============================================================================
+// Fast string-based extraction (10-50x faster than regex for simple patterns)
 
 // Fast string-based extraction for player URL from assets JSON
 std::optional<std::string> extract_assets_js_fast(const std::string &webpage) {
@@ -133,6 +123,11 @@ void PlayerScript::set_cache_directory(const fs::path &dir) {
 	fs::create_directories(cache_dir_, ec);
 }
 
+std::filesystem::path PlayerScript::get_cache_directory() {
+	std::lock_guard lock(cache_mutex_);
+	return cache_dir_;
+}
+
 void PlayerScript::clear_cache() {
 	std::lock_guard lock(cache_mutex_);
 	cache_.clear();
@@ -140,12 +135,7 @@ void PlayerScript::clear_cache() {
 	if (fs::exists(cache_dir_)) { fs::remove_all(cache_dir_, ec); }
 }
 
-// =============================================================================
-// BYTECODE CACHING
-// =============================================================================
-// Bytecode is stored alongside .js files with .jsc extension.
-// This provides ~10x faster script loading by skipping JS parsing.
-// =============================================================================
+// Bytecode stored alongside .js files with .jsc extension (~10x faster loading)
 
 std::optional<std::vector<uint8_t>> PlayerScript::get_cached_bytecode(
 	const std::string &player_id) {
@@ -246,9 +236,7 @@ void PlayerScript::cache_script(const std::string &player_id,
 
 std::optional<std::string> PlayerScript::extract_player_url_from_webpage(
 	const std::string &webpage) {
-	// =========================================================================
-	// FAST STRING-BASED EXTRACTION (Primary - ~10-50x faster than regex)
-	// =========================================================================
+	// Try fast string-based extraction first (primary method)
 
 	// Try fast string-based extraction first
 	if (auto result = extract_assets_js_fast(webpage)) {
@@ -261,10 +249,7 @@ std::optional<std::string> PlayerScript::extract_player_url_from_webpage(
 		return result;
 	}
 
-	// =========================================================================
-	// REGEX FALLBACK (Slower but more robust)
-	// =========================================================================
-	// Only use regex if fast methods fail. Uses pre-compiled static patterns.
+	// Regex fallback for edge cases (pre-compiled static patterns)
 
 	const auto &regexes = get_player_url_regexes();
 	std::smatch match;
@@ -296,14 +281,18 @@ std::optional<std::string> PlayerScript::extract_player_url_from_webpage(
 	return std::nullopt;
 }
 
-void PlayerScript::async_fetch(const std::string &video_id, ScriptCallback cb) {
+using WebpageCallback = std::function<void(const std::string &)>;
+
+void PlayerScript::async_fetch(const std::string &video_id, ScriptCallback cb,
+							   WebpageCallback on_webpage) {
 	std::string url =
 		fmt::format("https://www.youtube.com/watch?v={}", video_id);
 
 	http_.async_get(
 		url,
-		[this, video_id,
-		 cb = std::move(cb)](Result<net::HttpResponse> res_result) mutable {
+		[this, video_id, cb = std::move(cb),
+		 on_webpage = std::move(on_webpage)](
+			Result<net::HttpResponse> res_result) mutable {
 			if (res_result.has_error()) {
 				spdlog::error("Failed to fetch video page: {}",
 							  res_result.error().message());
@@ -315,6 +304,8 @@ void PlayerScript::async_fetch(const std::string &video_id, ScriptCallback cb) {
 					"Failed to fetch video page. Status: {}", res.status_code);
 				return cb(std::nullopt);
 			}
+
+			if (on_webpage) { on_webpage(res.body); }
 
 			auto extracted_url = extract_player_url_from_webpage(res.body);
 			if (!extracted_url) {

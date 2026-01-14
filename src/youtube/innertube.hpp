@@ -39,7 +39,9 @@ class Innertube {
 	static const InnertubeContext CLIENT_MWEB;		  // Has ultralow formats
 
 	// Helper to generate the JSON context payload for a request
-	static nlohmann::json build_context(const InnertubeContext &client);
+	static nlohmann::json build_context(const InnertubeContext &client,
+										const std::string &visitor_data = "",
+										const std::string &po_token = "");
 
 	// Helper to get headers
 	static std::map<std::string, std::string> get_headers(

@@ -2,18 +2,7 @@
 
 namespace ytdlpp::youtube {
 
-// =============================================================================
-// INNERTUBE CLIENT CONFIGURATIONS
-// =============================================================================
-// These configurations mirror yt-dlp's _base.py as of 2026.
-// Client versions are updated periodically to match current YouTube apps.
-//
-// Priority order for extraction:
-// 1. android_sdkless - Works without PO Token (best choice)
-// 2. tv              - Good format availability
-// 3. web_safari      - Returns pre-merged HLS formats
-// 4. web             - Standard fallback
-// =============================================================================
+// Client priority: android_sdkless (no POT) > tv > web_safari (HLS) > web
 
 // ANDROID client - standard Android app
 // Note: May require PO Token for some videos
@@ -56,9 +45,7 @@ const InnertubeContext Innertube::CLIENT_WEB = {
 	"",
 	1};	 // INNERTUBE_CONTEXT_CLIENT_NAME = 1
 
-// =============================================================================
-// RECOMMENDED CLIENTS - No PO Token Required
-// =============================================================================
+// Recommended clients - no PO Token required
 
 // ANDROID_SDKLESS - Android without SDK checks
 // BEST CHOICE: Doesn't require PO Token for most videos!
@@ -114,7 +101,9 @@ const InnertubeContext Innertube::CLIENT_MWEB = {
 	"iPad",
 	2};	 // INNERTUBE_CONTEXT_CLIENT_NAME = 2
 
-nlohmann::json Innertube::build_context(const InnertubeContext &client) {
+nlohmann::json Innertube::build_context(const InnertubeContext &client,
+										const std::string &visitor_data,
+										const std::string &po_token) {
 	nlohmann::json ctx = {
 		{"context",
 		 {{"client",
@@ -144,6 +133,14 @@ nlohmann::json Innertube::build_context(const InnertubeContext &client) {
 	// Add userAgent if not empty (mobile clients benefit from this)
 	if (!client.user_agent.empty()) {
 		ctx["context"]["client"]["userAgent"] = client.user_agent;
+	}
+
+	if (!visitor_data.empty()) {
+		ctx["context"]["client"]["visitorData"] = visitor_data;
+	}
+
+	if (!po_token.empty()) {
+		ctx["context"]["serviceIntegrityDimensions"]["poToken"] = po_token;
 	}
 
 	return ctx;

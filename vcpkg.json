@@ -9,8 +9,8 @@
     },
     "fmt",
     "nlohmann-json",
-    "quickjs-ng",
     "spdlog",
+    "v8",
     "zlib"
   ],
   "features": {

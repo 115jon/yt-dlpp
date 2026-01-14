@@ -36,6 +36,14 @@ class YTDLPP_EXPORT Extractor {
 
 	[[nodiscard]] asio::any_io_executor get_executor() const;
 
+	// Pre-load the most recent player script from cache to V8.
+	// Returns the player_id loaded, or empty string.
+	std::string warmup();
+
+	/// Shutdown the extractor, cancelling all active sessions and the JS
+	/// engine.
+	void shutdown();
+
 	using CompletionExecutor = asio::any_completion_executor;
 
 	template <BOOST_ASIO_COMPLETION_TOKEN_FOR(void(Result<VideoInfo>))

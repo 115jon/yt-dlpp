@@ -16,7 +16,7 @@
     {
       "kind": "git",
       "repository": "https://github.com/115jon/vcpkg-registry",
-      "baseline": "47af51d",
+      "baseline": "6a40c73af71ebe78495ca52b26bbd9a22cec39b3",
       "packages": [
         "certify"
       ]

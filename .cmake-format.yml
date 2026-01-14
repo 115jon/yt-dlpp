@@ -1,0 +1,32 @@
+format:
+  # Basic formatting
+  tab_size: 2
+  line_width: 80
+
+  # Indentation
+  indent_size: 2
+  use_tabchars: false
+
+  # Parentheses style - closing paren on its own line
+  dangle_parens: true
+  dangle_align: prefix
+
+  # Argument formatting - one argument per line for readability
+  max_pargs_hwrap: 1
+  max_subgroups_hwrap: 1
+
+  # Keyword argument formatting
+  keyword_case: upper
+
+  # Spacing
+  separate_ctrl_name_with_space: false
+  separate_fn_name_with_space: false
+  min_prefix_chars: 4
+  max_prefix_chars: 10
+
+  # Always break after opening paren for multi-line calls
+  always_wrap: []
+
+  # Enable canonical formatting for known commands
+  enable_sort: true
+  autosort: false
