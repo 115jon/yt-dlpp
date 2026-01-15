@@ -243,18 +243,39 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 				fmt_json.value("contentLength", "0"));
 		}
 
+		// Build format_id - yt-dlp uses itag + audio track suffix for
+		// uniqueness
+		std::string format_id_suffix;
 		if (fmt_json.contains("audioTrack")) {
 			const auto &at = fmt_json["audioTrack"];
 			std::string display_name = at.value("displayName", "");
-			std::string id = at.value("id", "");
+			std::string id = at.value("id", "");  // e.g., "en-GB.4"
 			bool is_default = at.value("audioIsDefault", false);
+			bool is_drc = fmt_json.value("isDrc", false);
 
+			spdlog::debug(
+				"itag={}: audioTrack.id='{}', displayName='{}', isDefault={}",
+				fmt.itag, id, display_name, is_default);
+
+			// Extract language code from audioTrack.id
 			if (!id.empty()) {
 				size_t dot = id.find('.');
 				if (dot != std::string::npos)
 					fmt.language = id.substr(0, dot);
 				else
 					fmt.language = id;
+
+				// Use full audioTrack.id as format_id suffix (handles
+				// multi-lang)
+				format_id_suffix = id;
+			}
+
+			// Handle DRC suffix (like yt-dlp)
+			if (is_drc) {
+				if (format_id_suffix.empty())
+					format_id_suffix = "drc";
+				else
+					format_id_suffix += "-drc";
 			}
 
 			std::string dn_lower = display_name;
@@ -271,6 +292,13 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			} else {
 				fmt.language_preference = -1;
 			}
+		}
+
+		// Build final format_id: itag or itag-suffix
+		if (format_id_suffix.empty()) {
+			fmt.format_id = std::to_string(fmt.itag);
+		} else {
+			fmt.format_id = std::to_string(fmt.itag) + "-" + format_id_suffix;
 		}
 
 		if (!fmt.mime_type.empty()) {
@@ -678,19 +706,28 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		// Extract metadata from the first response
 		extract_video_metadata(responses[0].second);
 
-		// Collect all format JSONs
+		// Collect all format JSONs, tracking which clients have audioTrack
 		std::vector<nlohmann::json> all_format_jsons;
 		for (const auto &[client_name, resp] : responses) {
 			if (resp.contains("streamingData")) {
-				if (resp["streamingData"].contains("formats")) {
-					for (const auto &f : resp["streamingData"]["formats"])
+				int audio_track_count = 0;
+				int format_count = 0;
+
+				auto process_formats = [&](const nlohmann::json &formats) {
+					for (const auto &f : formats) {
 						all_format_jsons.push_back(f);
-				}
-				if (resp["streamingData"].contains("adaptiveFormats")) {
-					for (const auto &f :
-						 resp["streamingData"]["adaptiveFormats"])
-						all_format_jsons.push_back(f);
-				}
+						format_count++;
+						if (f.contains("audioTrack")) audio_track_count++;
+					}
+				};
+
+				if (resp["streamingData"].contains("formats"))
+					process_formats(resp["streamingData"]["formats"]);
+				if (resp["streamingData"].contains("adaptiveFormats"))
+					process_formats(resp["streamingData"]["adaptiveFormats"]);
+
+				spdlog::debug("{} client: {} formats, {} with audioTrack",
+							  client_name, format_count, audio_track_count);
 			}
 		}
 
@@ -719,12 +756,12 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 	}
 
 	void finalize_formats() {
-		// Deduplicate formats by itag
-		std::set<int> seen_itags;
+		// Deduplicate formats by format_id (preserves language variants)
+		std::set<std::string> seen_format_ids;
 		std::vector<VideoFormat> unique_formats;
 		for (const auto &fmt : collected_info.formats) {
-			if (seen_itags.find(fmt.itag) == seen_itags.end()) {
-				seen_itags.insert(fmt.itag);
+			if (seen_format_ids.find(fmt.format_id) == seen_format_ids.end()) {
+				seen_format_ids.insert(fmt.format_id);
 				unique_formats.push_back(fmt);
 			}
 		}
@@ -1147,7 +1184,8 @@ void to_json(nlohmann::json &j, const SearchResult &r) {
 
 void to_json(nlohmann::json &j, const VideoFormat &f) {
 	j = nlohmann::json{
-		{"format_id", std::to_string(f.itag)},
+		{"format_id",
+		 f.format_id.empty() ? std::to_string(f.itag) : f.format_id},
 		{"url", f.url},
 		{"filesize", f.content_length},
 		{"vcodec", f.vcodec},
@@ -1167,6 +1205,10 @@ void to_json(nlohmann::json &j, const VideoFormat &f) {
 		j["height"] = f.height;
 	else
 		j["height"] = nullptr;
+
+	// Language fields for yt-dlp parity
+	if (!f.language.empty()) j["language"] = f.language;
+	j["language_preference"] = f.language_preference;
 
 	// Derived bitrates
 	if (f.tbr > 0) {

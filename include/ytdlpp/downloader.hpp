@@ -13,7 +13,6 @@
 #include <ytdlpp/result.hpp>
 #include <ytdlpp/types.hpp>
 
-
 // Forward declarations
 namespace ytdlpp::net {
 class HttpClient;
@@ -43,8 +42,9 @@ class YTDLPP_EXPORT Downloader {
 	};
 
 	// Static helper - doesn't need async
-	[[nodiscard]] static StreamInfo select_streams(const VideoInfo &info,
-												   std::string_view selector);
+	[[nodiscard]] static StreamInfo select_streams(
+		const VideoInfo &info, std::string_view selector,
+		std::optional<std::string> preferred_lang = std::nullopt);
 
 	template <BOOST_ASIO_COMPLETION_TOKEN_FOR(void(Result<std::string>))
 				  CompletionToken>

@@ -33,8 +33,9 @@ struct Downloader::Impl {
 		: http(std::move(h)) {}
 
 	// Logic for stream selection
-	static Downloader::StreamInfo select_streams(const VideoInfo &info,
-												 std::string_view selector);
+	static Downloader::StreamInfo select_streams(
+		const VideoInfo &info, std::string_view selector,
+		std::optional<std::string> preferred_lang = std::nullopt);
 
 	// Async download logic delegate
 	void async_download(
@@ -163,12 +164,9 @@ class AsyncDownloaderSession
 			start_time_ = std::chrono::steady_clock::now();
 		}
 
-		DownloadProgress prog;
+		DownloadProgress prog{};
 		prog.total_downloaded_bytes = total_current;
 		prog.total_size_bytes = total_size;
-		prog.percentage = 0.0;
-		prog.speed_bytes_per_sec = 0.0;
-		prog.eta_seconds = 0.0;
 
 		if (total_size > 0) {
 			prog.percentage = (double)total_current / total_size * 100.0;
@@ -207,33 +205,24 @@ class AsyncDownloaderSession
 
 	void finalize() {
 		if (streams_.video && streams_.audio && merge_fmt_) {
-			// Merge using ffmpeg
 			spdlog::info("Merging video and audio...");
 			report_progress("merging");
 
 			std::string output_filename = base_filename_ + "." + *merge_fmt_;
-			// Simple ffmpeg merge command
-			std::string cmd =
-				"ffmpeg -y -i \"" + video_path_ + "\" -i \"" + audio_path_ +
-				"\" -c copy \"" + output_filename + "\"";
 
-			// We should probably use a better way to invoke ffmpeg, but for
-			// now:
-			int ret = std::system(cmd.c_str());
-			if (ret == 0) {
+			if (media::Muxer::merge(
+					video_path_, audio_path_, output_filename)) {
 				std::filesystem::remove(video_path_);
 				std::filesystem::remove(audio_path_);
 				return complete(outcome::success(output_filename));
-			} else {
-				spdlog::error("Merge failed");
-				return complete(outcome::failure(errc::muxer_error));
 			}
-		} else {
-			// If not merging, just return video path for now or maybe both?
-			// The user interface assumes single file return usually.
-			// Let's return video path.
-			return complete(outcome::success(video_path_));
+			spdlog::error("Merge failed");
+			return complete(outcome::failure(errc::muxer_error));
 		}
+		// If not merging, just return video path for now or maybe both?
+		// The user interface assumes single file return usually.
+		// Let's return video path.
+		return complete(outcome::success(video_path_));
 	}
 
 	void complete(Result<std::string> res) {
@@ -256,7 +245,8 @@ void Downloader::Impl::async_download(
 }
 
 Downloader::StreamInfo Downloader::Impl::select_streams(
-	const VideoInfo &info, std::string_view selector) {
+	const VideoInfo &info, std::string_view selector,
+	std::optional<std::string> preferred_lang) {
 	StreamInfo result;
 
 	auto get_vcodec_score = [](const std::string &codec) -> int {
@@ -286,41 +276,52 @@ Downloader::StreamInfo Downloader::Impl::select_streams(
 
 	if (selector == "bestaudio") {
 		const VideoFormat *best = nullptr;
+		const VideoFormat *preferred =
+			nullptr;  // Track preferred language match
 		for (const auto &f : info.formats) {
 			if (f.vcodec == "none" && f.acodec != "none") {
-				if (!best) {
-					best = &f;
-					continue;
+				// Check if format matches preferred language
+				bool is_preferred =
+					preferred_lang && f.language == *preferred_lang;
+
+				auto compare_audio = [&](const VideoFormat *current,
+										 const VideoFormat &candidate) {
+					if (!current) return true;
+					if (candidate.language_preference !=
+						current->language_preference)
+						return candidate.language_preference >
+							   current->language_preference;
+					if (candidate.audio_channels != current->audio_channels)
+						return candidate.audio_channels >
+							   current->audio_channels;
+					int score_new = get_acodec_score(candidate.acodec);
+					int score_best = get_acodec_score(current->acodec);
+					if (score_new != score_best) return score_new > score_best;
+					return candidate.tbr > current->tbr;
+				};
+
+				if (is_preferred) {
+					if (compare_audio(preferred, f)) preferred = &f;
 				}
-				bool is_better = false;
-				if (f.language_preference != best->language_preference) {
-					is_better =
-						f.language_preference > best->language_preference;
-				} else if (f.audio_channels != best->audio_channels) {
-					is_better = f.audio_channels > best->audio_channels;
-				} else {
-					int score_new = get_acodec_score(f.acodec);
-					int score_best = get_acodec_score(best->acodec);
-					if (score_new != score_best)
-						is_better = score_new > score_best;
-					else
-						is_better = f.tbr > best->tbr;
-				}
-				if (is_better) { best = &f; }
+				if (compare_audio(best, f)) best = &f;
 			}
 		}
-		if (best)
+		// Prefer exact language match, fallback to best overall
+		const VideoFormat *selected = preferred ? preferred : best;
+		if (selected)
 			spdlog::info(
 				"Selected best audio: itag={}, ext={}, tbr={:.2f}, acodec={}, "
-				"channels={}, lang_pref={}",
-				best->itag, best->ext, best->tbr, best->acodec,
-				best->audio_channels, best->language_preference);
-		result.audio = best;
+				"channels={}, lang={}, lang_pref={}",
+				selected->itag, selected->ext, selected->tbr, selected->acodec,
+				selected->audio_channels, selected->language,
+				selected->language_preference);
+		result.audio = selected;
 		return result;
 	}
 
 	const VideoFormat *best_video = nullptr;
 	const VideoFormat *best_audio = nullptr;
+	const VideoFormat *best_audio_preferred_ = nullptr;
 
 	spdlog::debug("Sorting video formats by: res, fps, vcodec, tbr");
 
@@ -350,36 +351,36 @@ Downloader::StreamInfo Downloader::Impl::select_streams(
 			}
 		}
 
-		if (f.acodec != "none") {
-			if (!best_audio || f.tbr > best_audio->tbr) best_audio = &f;
-			if (f.vcodec == "none") {
-				if (!best_audio)
-					best_audio = &f;
-				else {
-					bool is_better = false;
-					if (f.language_preference !=
-						best_audio->language_preference) {
-						is_better = f.language_preference >
-									best_audio->language_preference;
-					} else if (f.audio_channels != best_audio->audio_channels) {
-						is_better =
-							f.audio_channels > best_audio->audio_channels;
-					} else {
-						int s_new = get_acodec_score(f.acodec);
-						int s_best = get_acodec_score(best_audio->acodec);
-						if (s_new != s_best)
-							is_better = s_new > s_best;
-						else
-							is_better = f.tbr > best_audio->tbr;
-					}
-					if (is_better) best_audio = &f;
-				}
+		if (f.acodec != "none" && f.vcodec == "none") {
+			bool is_preferred = preferred_lang && f.language == *preferred_lang;
+
+			auto compare_audio = [&](const VideoFormat *current,
+									 const VideoFormat &candidate) {
+				if (!current) return true;
+				if (candidate.language_preference !=
+					current->language_preference)
+					return candidate.language_preference >
+						   current->language_preference;
+				if (candidate.audio_channels != current->audio_channels)
+					return candidate.audio_channels > current->audio_channels;
+				int s_new = get_acodec_score(candidate.acodec);
+				int s_best = get_acodec_score(current->acodec);
+				if (s_new != s_best) return s_new > s_best;
+				return candidate.tbr > current->tbr;
+			};
+
+			if (is_preferred) {
+				if (!best_audio_preferred_ ||
+					compare_audio(best_audio_preferred_, f))
+					best_audio_preferred_ = &f;
 			}
+			if (compare_audio(best_audio, f)) best_audio = &f;
 		}
 	}
 
 	result.video = best_video;
-	result.audio = best_audio;
+	// Prefer exact language match, fallback to best overall
+	result.audio = best_audio_preferred_ ? best_audio_preferred_ : best_audio;
 	return result;
 }
 
@@ -424,9 +425,10 @@ void Downloader::async_download_impl(
 		std::move(progress_cb), std::move(handler), std::move(handler_ex));
 }
 
-Downloader::StreamInfo Downloader::select_streams(const VideoInfo &info,
-												  std::string_view selector) {
-	return Impl::select_streams(info, selector);
+Downloader::StreamInfo Downloader::select_streams(
+	const VideoInfo &info, std::string_view selector,
+	std::optional<std::string> preferred_lang) {
+	return Impl::select_streams(info, selector, std::move(preferred_lang));
 }
 
 }  // namespace ytdlpp

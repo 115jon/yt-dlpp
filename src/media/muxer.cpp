@@ -23,7 +23,7 @@ namespace ytdlpp::media {
 // =============================================================================
 namespace {
 constexpr size_t kIOBufferSize = 1024 * 1024;  // 1MB I/O buffer
-}
+}  // namespace
 
 bool Muxer::merge(const std::string &video_path, const std::string &audio_path,
 				  const std::string &output_path) {

@@ -166,6 +166,9 @@ struct CliOptions {
 	bool extract_audio = false;
 	std::string audio_format;  // mp3, m4a, opus, etc.
 
+	// Audio track selection
+	std::optional<std::string> audio_lang;	// --audio-lang (e.g., "ja", "en")
+
 	// New: display options
 	bool quiet = false;
 	bool simulate = false;
@@ -256,8 +259,8 @@ void run_app(asio::io_context &ioc,
 
 			// If --get-url, print URLs
 			if (opts.get_url) {
-				auto streams =
-					ytdlpp::Downloader::select_streams(info, opts.format);
+				auto streams = ytdlpp::Downloader::select_streams(
+					info, opts.format, opts.audio_lang);
 				if (streams.video) { std::cout << streams.video->url << "\n"; }
 				if (streams.audio && streams.audio != streams.video) {
 					std::cout << streams.audio->url << "\n";
@@ -266,11 +269,11 @@ void run_app(asio::io_context &ioc,
 			}
 
 			// Select format and show info line
-			auto streams =
-				ytdlpp::Downloader::select_streams(info, opts.format);
+			auto streams = ytdlpp::Downloader::select_streams(
+				info, opts.format, opts.audio_lang);
 			if (!streams.video && !streams.audio) {
-				fmt::println(stderr, "ERROR: No matching format for: {}",
-							 opts.format);
+				fmt::println(
+					stderr, "ERROR: No matching format for: {}", opts.format);
 				continue;
 			}
 
@@ -286,8 +289,8 @@ void run_app(asio::io_context &ioc,
 			}
 
 			if (!opts.quiet) {
-				log_info(fmt::format("{}: Downloading 1 format(s): {}",
-									 info.id, format_str));
+				log_info(fmt::format(
+					"{}: Downloading 1 format(s): {}", info.id, format_str));
 			}
 
 			// Handle --simulate (don't download)
@@ -311,8 +314,8 @@ void run_app(asio::io_context &ioc,
 							 download_result.error().message());
 			} else {
 				if (!opts.quiet) {
-					fmt::println("\n[download] 100%% of {}",
-								 download_result.value());
+					fmt::println(
+						"\n[download] 100%% of {}", download_result.value());
 				}
 			}
 		}
@@ -396,9 +399,9 @@ void run_app(asio::io_context &ioc,
 		return;
 	}
 
-	// Handle --get-url
 	if (opts.get_url) {
-		auto streams = ytdlpp::Downloader::select_streams(info, opts.format);
+		auto streams = ytdlpp::Downloader::select_streams(
+			info, opts.format, opts.audio_lang);
 
 		if (streams.video) { std::cout << streams.video->url << "\n"; }
 		if (streams.audio && streams.audio != streams.video) {
@@ -410,9 +413,9 @@ void run_app(asio::io_context &ioc,
 		}
 		return;
 	}
-
 	// Select format and show info (like yt-dlp)
-	auto streams = ytdlpp::Downloader::select_streams(info, opts.format);
+	auto streams =
+		ytdlpp::Downloader::select_streams(info, opts.format, opts.audio_lang);
 	if (!streams.video && !streams.audio) {
 		fmt::println(
 			stderr, "ERROR: No matching format found for: {}", opts.format);
@@ -491,6 +494,8 @@ int main(int argc, char *argv[]) {
 			("extract-audio,x", "Convert video to audio-only file")
 			("audio-format", po::value<std::string>(),
 			 "Audio format to convert to (mp3, m4a, opus, vorbis, flac)")
+			("audio-lang", po::value<std::string>(),
+			 "Prefer audio with this language code (e.g., ja, en, es)")
 			// Output options
 			("output,o", po::value<std::string>(),
 			 "Output filename template (e.g., %(title)s.%(ext)s)")
@@ -579,6 +584,9 @@ int main(int argc, char *argv[]) {
 		}
 		if (vm.count("audio-format")) {
 			opts.audio_format = vm["audio-format"].as<std::string>();
+		}
+		if (vm.count("audio-lang")) {
+			opts.audio_lang = vm["audio-lang"].as<std::string>();
 		}
 
 		opts.extract_audio = vm.count("extract-audio") > 0;

@@ -24,6 +24,7 @@ using StreamDataCallback = std::function<void(const std::vector<uint8_t> &)>;
 
 struct YTDLPP_EXPORT VideoFormat {
 	int itag = 0;
+	std::string format_id;	// Unique ID (e.g., "251", "251-drc", "139-en-GB")
 	std::string url;
 	std::string mime_type;
 	std::string ext;
