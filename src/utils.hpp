@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utf8.h>
+
 #include <boost/charconv.hpp>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -18,42 +20,8 @@ namespace ytdlpp::utils {
 inline std::string sanitize_utf8(std::string_view input) {
 	std::string result;
 	result.reserve(input.size());
-
-	for (size_t i = 0; i < input.size();) {
-		auto byte = static_cast<unsigned char>(input[i]);
-
-		// ASCII (0x00-0x7F)
-		if (byte <= 0x7F) {
-			result.push_back(static_cast<char>(byte));
-			++i;
-		}
-		// 2-byte sequence (0xC0-0xDF)
-		else if ((byte & 0xE0) == 0xC0 && i + 1 < input.size() &&
-				 (static_cast<unsigned char>(input[i + 1]) & 0xC0) == 0x80) {
-			result.append(input.data() + i, 2);
-			i += 2;
-		}
-		// 3-byte sequence (0xE0-0xEF)
-		else if ((byte & 0xF0) == 0xE0 && i + 2 < input.size() &&
-				 (static_cast<unsigned char>(input[i + 1]) & 0xC0) == 0x80 &&
-				 (static_cast<unsigned char>(input[i + 2]) & 0xC0) == 0x80) {
-			result.append(input.data() + i, 3);
-			i += 3;
-		}
-		// 4-byte sequence (0xF0-0xF7)
-		else if ((byte & 0xF8) == 0xF0 && i + 3 < input.size() &&
-				 (static_cast<unsigned char>(input[i + 1]) & 0xC0) == 0x80 &&
-				 (static_cast<unsigned char>(input[i + 2]) & 0xC0) == 0x80 &&
-				 (static_cast<unsigned char>(input[i + 3]) & 0xC0) == 0x80) {
-			result.append(input.data() + i, 4);
-			i += 4;
-		}
-		// Invalid byte - skip it
-		else {
-			++i;
-		}
-	}
-
+	utf8::replace_invalid(
+		input.begin(), input.end(), std::back_inserter(result));
 	return result;
 }
 

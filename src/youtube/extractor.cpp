@@ -1028,7 +1028,8 @@ static std::vector<SearchResult> extract_search_results(
 					for (const auto &run : *desc_runs) {
 						if (auto text = utils::traverse_obj<std::string>(
 								run, {"text"})) {
-							result.description_snippet += *text;
+							result.description_snippet +=
+								utils::sanitize_utf8(*text);
 						}
 					}
 				}
