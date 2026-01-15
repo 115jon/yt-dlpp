@@ -499,10 +499,13 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 	void extract_video_metadata(const nlohmann::json &json) {
 		if (json.contains("videoDetails")) {
 			const auto &details = json["videoDetails"];
-			collected_info.title = details.value("title", "");
+			collected_info.title =
+				utils::sanitize_utf8(details.value("title", ""));
 			collected_info.fulltitle = collected_info.title;
-			collected_info.description = details.value("shortDescription", "");
-			collected_info.uploader = details.value("author", "");
+			collected_info.description =
+				utils::sanitize_utf8(details.value("shortDescription", ""));
+			collected_info.uploader =
+				utils::sanitize_utf8(details.value("author", ""));
 			collected_info.channel = collected_info.uploader;
 			collected_info.uploader_id = details.value("channelId", "");
 			collected_info.channel_id = collected_info.uploader_id;
@@ -918,7 +921,7 @@ static std::vector<SearchResult> extract_search_results(
 				if (title_runs->is_array() && !title_runs->empty()) {
 					if (auto text = utils::traverse_obj<std::string>(
 							(*title_runs)[0], {"text"})) {
-						result.title = *text;
+						result.title = utils::sanitize_utf8(*text);
 					}
 				}
 			}
@@ -929,7 +932,7 @@ static std::vector<SearchResult> extract_search_results(
 				if (channel_runs->is_array() && !channel_runs->empty()) {
 					if (auto text = utils::traverse_obj<std::string>(
 							(*channel_runs)[0], {"text"})) {
-						result.channel = *text;
+						result.channel = utils::sanitize_utf8(*text);
 					}
 					// Channel ID from navigation endpoint
 					if (auto browse_id = utils::traverse_obj<std::string>(
