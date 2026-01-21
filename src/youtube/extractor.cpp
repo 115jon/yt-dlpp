@@ -792,6 +792,11 @@ struct Extractor::Impl {
 	std::shared_ptr<scripting::JsEngine> js;
 	std::vector<std::weak_ptr<AsyncSession>> sessions;
 
+	// Track warmup solver for clean shutdown
+	std::mutex warmup_mutex;
+	std::shared_ptr<EjsSolver> warmup_solver;
+	std::atomic<bool> warmup_done{true};
+
 	Impl(std::shared_ptr<net::HttpClient> h, asio::any_io_executor ex)
 		: ex(std::move(ex)), http(std::move(h)) {
 		js = std::make_shared<scripting::JsEngine>(this->ex);
@@ -807,6 +812,12 @@ struct Extractor::Impl {
 			if (auto s = w.lock()) { s->cancel(); }
 		}
 		sessions.clear();
+
+		// Clear warmup solver reference to allow cleanup
+		{
+			std::lock_guard lock(warmup_mutex);
+			warmup_solver.reset();
+		}
 
 		// Shutdown the JS engine (this terminates V8)
 		if (js) { js->shutdown(); }
@@ -1306,11 +1317,28 @@ std::string Extractor::warmup() {
 
 	spdlog::info("Pre-loading cached player {}...", latest_id);
 
-	// Create transient solver and keep it alive via lambda capture
+	// Check if already shutting down
+	if (m_impl->shutdown_flag.load()) { return ""; }
+
+	// Create solver and track it for clean shutdown
 	auto solver = std::make_shared<EjsSolver>(*m_impl->js);
+	{
+		std::lock_guard lock(m_impl->warmup_mutex);
+		m_impl->warmup_solver = solver;
+		m_impl->warmup_done = false;
+	}
+
+	auto *impl_ptr = m_impl.get();	// Capture raw pointer, impl outlives warmup
 	solver->async_load_player(
 		content,
-		[solver, id = latest_id](bool success) {
+		[impl_ptr, solver, id = latest_id](bool success) {
+			// Mark warmup complete
+			{
+				std::lock_guard lock(impl_ptr->warmup_mutex);
+				impl_ptr->warmup_done = true;
+				impl_ptr->warmup_solver.reset();
+			}
+
 			if (success) {
 				spdlog::info("Pre-loaded player {} successfully.", id);
 			} else {
