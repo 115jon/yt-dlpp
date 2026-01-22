@@ -7,7 +7,6 @@
 
 // Forward declaration
 namespace ytdlpp {
-class NativeJsSolver;
 class EjsSolver;
 }  // namespace ytdlpp
 
@@ -67,9 +66,7 @@ class SigDecipherer {
 
    private:
 	scripting::JsEngine &js_;
-	std::unique_ptr<NativeJsSolver> native_solver_;
 	std::unique_ptr<EjsSolver> ejs_solver_;
-	bool use_ejs_{false};
 
 	// Async impls
 	void async_load_functions_impl(

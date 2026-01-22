@@ -142,7 +142,6 @@ add_library(
     src/error.cpp
     src/net/http_client.cpp
     src/scripting/js_engine_v8.cpp # V8 Implementation
-    src/scripting/native_js_solver.cpp
     src/ejs_solver.cpp
     src/youtube/innertube.cpp
     src/youtube/extractor.cpp
