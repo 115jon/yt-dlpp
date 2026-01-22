@@ -4,7 +4,6 @@
 
 #include <boost/asio.hpp>
 #include <future>
-#include <iostream>
 #include <mutex>
 #include <thread>
 
@@ -28,12 +27,22 @@ struct JsEngine::Impl {
 	Impl() {
 		work_guard = std::make_unique<boost::asio::executor_work_guard<
 			boost::asio::io_context::executor_type>>(ioc.get_executor());
+
+		// Use promise to synchronize V8 initialization
+		std::promise<void> init_promise;
+		auto init_future = init_promise.get_future();
+
 		// Start thread
-		worker = std::thread([this]() {
-			this->InitializeV8OnThread();
-			this->ioc.run();
-			this->CleanupV8OnThread();
-		});
+		worker = std::thread(
+			[this, init_promise = std::move(init_promise)]() mutable {
+				this->InitializeV8OnThread();
+				init_promise.set_value();  // Signal that V8 is ready
+				this->ioc.run();
+				this->CleanupV8OnThread();
+			});
+
+		// Wait for V8 to be fully initialized before returning
+		init_future.wait();
 	}
 
 	~Impl() { shutdown(); }
@@ -41,15 +50,49 @@ struct JsEngine::Impl {
 	void shutdown() {
 		if (shutdown_flag.exchange(true)) { return; }  // Already shut down
 
-		// Terminate any running V8 scripts
+		// Terminate any running V8 scripts first
 		if (isolate) { isolate->TerminateExecution(); }
 
-		// Stop the io_context
+		// Release work guard to allow ioc.run() to exit
 		work_guard->reset();
+
+		// Stop io_context - this should cause ioc.run() to return
 		ioc.stop();
 
-		// Wait for worker to finish
-		if (worker.joinable()) { worker.join(); }
+		// Attempt to join the worker thread. The worker should exit quickly
+		// since ioc.run() has been stopped. However, V8's Isolate::Dispose()
+		// in CleanupV8OnThread() can sometimes deadlock on Windows due to
+		// internal GC sweeper thread issues (see Chromium bug tracker).
+		//
+		// Best practice says prefer join() over detach(). We try join first
+		// with a short wait, only falling back to detach if it hangs.
+		if (worker.joinable()) {
+			// Use a helper thread to implement a timeout for join
+			// IMPORTANT: joined must be heap-allocated because if we detach
+			// the joiner thread, it can outlive this function and access
+			// 'joined'
+			auto joined = std::make_shared<std::atomic<bool>>(false);
+			std::thread joiner([this, joined]() {
+				worker.join();
+				joined->store(true);
+			});
+
+			// Give the worker up to 500ms to clean up and exit
+			auto deadline = std::chrono::steady_clock::now() +
+							std::chrono::milliseconds(500);
+			while (!joined->load() &&
+				   std::chrono::steady_clock::now() < deadline) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+
+			if (joined->load()) {
+				joiner.join();
+			} else {
+				// V8 cleanup can hang on Windows - detach to avoid blocking
+				// shutdown (known Chromium issue with GC sweeper threads)
+				joiner.detach();
+			}
+		}
 	}
 
 	void InitializeV8OnThread() {
@@ -97,12 +140,12 @@ struct JsEngine::Impl {
 
 		boost::asio::post(ioc, [this, p = std::move(promise),
 								f = std::forward<Func>(func)]() mutable {
-			if (!isolate) {
+			if (!isolate || shutdown_flag.load()) {
 				if constexpr (std::is_void_v<ResultType>)
 					p.set_value();
 				else
-					p.set_exception(std::make_exception_ptr(
-						std::runtime_error("V8 not initialized")));
+					p.set_exception(std::make_exception_ptr(std::runtime_error(
+						"V8 not initialized or shutting down")));
 				return;
 			}
 
@@ -129,7 +172,7 @@ struct JsEngine::Impl {
 	void RunOnWorkerAsync(Func &&func, Handler &&handler) {
 		boost::asio::post(ioc, [this, f = std::forward<Func>(func),
 								h = std::forward<Handler>(handler)]() mutable {
-			if (!isolate) {
+			if (!isolate || shutdown_flag.load()) {
 				h(outcome::failure(
 					std::make_error_code(std::errc::state_not_recoverable)));
 				return;

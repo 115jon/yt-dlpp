@@ -32,6 +32,9 @@ struct AudioStream::Impl : std::enable_shared_from_this<AudioStream::Impl> {
 	asio::any_io_executor ex;
 	asio::strand<asio::any_io_executor> strand;
 
+	// FFmpeg interrupt token (shared with producer thread)
+	std::shared_ptr<std::atomic<bool>> cancel_token;
+
 	// Thread-safe state
 	std::mutex mutex;
 	std::condition_variable cv;
@@ -63,6 +66,11 @@ struct AudioStream::Impl : std::enable_shared_from_this<AudioStream::Impl> {
 	~Impl() { cancel(); }
 
 	void cancel() {
+		// Set FFmpeg interrupt token first to stop any blocking I/O
+		if (cancel_token) {
+			cancel_token->store(true, std::memory_order_release);
+		}
+
 		std::unique_lock lock(mutex);
 		cancelled = true;
 		cv.notify_all();
@@ -539,6 +547,9 @@ void AudioStreamer::async_open_impl(
 	// Create the stream impl
 	auto stream_impl = std::make_shared<AudioStream::Impl>(m_impl->ex);
 	auto cancel_token = std::make_shared<std::atomic<bool>>(false);
+
+	// Store cancel token in impl so cancel() can interrupt FFmpeg
+	stream_impl->cancel_token = cancel_token;
 
 	// Bind cancellation
 	if (slot.is_connected()) {

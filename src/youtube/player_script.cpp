@@ -3,8 +3,8 @@
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
+#include <boost/regex.hpp>
 #include <fstream>
-#include <regex>
 #include <string>
 
 namespace ytdlpp::youtube {
@@ -17,24 +17,24 @@ namespace {
 // startup)
 
 struct PlayerUrlRegexes {
-	std::regex script_src;
-	std::regex assets_js;
-	std::regex generic_base;
-	std::regex player_id;
+	boost::regex script_src;
+	boost::regex assets_js;
+	boost::regex generic_base;
+	boost::regex player_id;
 
 	PlayerUrlRegexes()
 		// Strategy 1: Look for <script src="...player_ias...base.js">
 		: script_src(
 			  R"RE(<script\s+[^>]*src="([^"]+player_ias[^"]+base\.js)"[^>]*>)RE",
-			  std::regex::optimize),
+			  boost::regex::optimize),
 		  // Strategy 2: Look for "assets": { "js": "..." }
 		  assets_js(R"RE("assets"\s*:\s*\{\s*"js"\s*:\s*"([^"]+)")RE",
-					std::regex::optimize),
+					boost::regex::optimize),
 		  // Strategy 3: Generic base.js with flexible path
 		  generic_base(R"RE((/s/player/[a-zA-Z0-9._/-]+/base\.js))RE",
-					   std::regex::optimize),
+					   boost::regex::optimize),
 		  // Extract player ID from URL like /player/XXXXXX/
-		  player_id(R"RE(/player/([^/]+)/)RE", std::regex::optimize) {}
+		  player_id(R"RE(/player/([^/]+)/)RE", boost::regex::optimize) {}
 };
 
 // Get static regex instances (initialized once on first use)
@@ -252,11 +252,11 @@ std::optional<std::string> PlayerScript::extract_player_url_from_webpage(
 	// Regex fallback for edge cases (pre-compiled static patterns)
 
 	const auto &regexes = get_player_url_regexes();
-	std::smatch match;
+	boost::smatch match;
 
 	// Strategy 1: Look for <script src="...player_ias...base.js">
 	try {
-		if (std::regex_search(webpage, match, regexes.script_src)) {
+		if (boost::regex_search(webpage, match, regexes.script_src)) {
 			spdlog::debug("Player URL extracted via script_src regex");
 			return match[1].str();
 		}
@@ -264,7 +264,7 @@ std::optional<std::string> PlayerScript::extract_player_url_from_webpage(
 
 	// Strategy 2: Look for "assets": { "js": "..." }
 	try {
-		if (std::regex_search(webpage, match, regexes.assets_js)) {
+		if (boost::regex_search(webpage, match, regexes.assets_js)) {
 			spdlog::debug("Player URL extracted via assets_js regex");
 			return match[1].str();
 		}
@@ -272,7 +272,7 @@ std::optional<std::string> PlayerScript::extract_player_url_from_webpage(
 
 	// Strategy 3: Generic base.js pattern
 	try {
-		if (std::regex_search(webpage, match, regexes.generic_base)) {
+		if (boost::regex_search(webpage, match, regexes.generic_base)) {
 			spdlog::debug("Player URL extracted via generic_base regex");
 			return match[1].str();
 		}
@@ -323,8 +323,9 @@ void PlayerScript::async_fetch(const std::string &video_id, ScriptCallback cb,
 				// Fallback to regex for unusual URL formats
 				const auto &regexes = get_player_url_regexes();
 				try {
-					std::smatch m;
-					if (std::regex_search(player_url_, m, regexes.player_id)) {
+					boost::smatch m;
+					if (boost::regex_search(
+							player_url_, m, regexes.player_id)) {
 						player_id = m[1].str();
 					}
 				} catch (...) {}

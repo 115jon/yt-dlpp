@@ -2,9 +2,6 @@
   "name": "ytdlpp",
   "version": "0.1.0",
   "description": "A C++ YouTube video/audio downloader library",
-  "homepage": "https://github.com/yourusername/yt-dlpp",
-  "license": "MIT",
-  "supports": "!uwp",
   "dependencies": [
     {
       "name": "certify",
@@ -12,8 +9,9 @@
     },
     "fmt",
     "nlohmann-json",
-    "v8",
     "spdlog",
+    "utfcpp",
+    "v8",
     {
       "name": "vcpkg-cmake",
       "host": true
@@ -74,5 +72,10 @@
         }
       ]
     }
-  }
+  },
+  "default-features": [
+    "boost",
+    "openssl",
+    "ffmpeg"
+  ]
 }
