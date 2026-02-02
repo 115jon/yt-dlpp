@@ -40,8 +40,12 @@ int main() {
 
 			// Async Download
 			std::cout << "Starting download (best video+audio)...\n";
+			ytdlpp::Downloader::DownloadOptions options;
+			options.format_selector = "best";
+			options.merge_format = "mp4";
+
 			downloader->async_download(
-				info, "best", "mp4",
+				info, options,
 				[](const std::string &status,
 				   const ytdlpp::DownloadProgress &prog) {
 					static auto last_print = std::chrono::steady_clock::now();

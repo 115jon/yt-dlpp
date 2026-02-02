@@ -44,17 +44,24 @@ class YTDLPP_EXPORT Downloader {
 	// Static helper - doesn't need async
 	[[nodiscard]] static StreamInfo select_streams(
 		const VideoInfo &info, std::string_view selector,
-		std::optional<std::string> preferred_lang = std::nullopt);
+		std::optional<std::string> preferred_lang = std::nullopt,
+		std::string_view sort_order = "");
+
+	struct DownloadOptions {
+		std::string format_selector = "best";
+		std::optional<std::string> merge_format;
+		std::string output_template = "%(title)s [%(id)s].%(ext)s";
+		bool force_overwrites = false;
+		bool no_overwrites = true;	// Default to skip if exists
+	};
 
 	template <BOOST_ASIO_COMPLETION_TOKEN_FOR(void(Result<std::string>))
 				  CompletionToken>
-	auto async_download(const VideoInfo &info, std::string_view format_selector,
-						std::optional<std::string> merge_format,
+	auto async_download(const VideoInfo &info, DownloadOptions options,
 						ProgressCallback progress_cb, CompletionToken &&token) {
 		auto ex = get_executor();
 		return asio::async_initiate<CompletionToken, void(Result<std::string>)>(
-			[this, ex, info, format_selector_s = std::string(format_selector),
-			 merge_format = std::move(merge_format),
+			[this, ex, info, options = std::move(options),
 			 progress_cb = std::move(progress_cb)](auto &&handler) mutable {
 				CompletionExecutor handler_ex =
 					asio::get_associated_executor(handler, ex);
@@ -64,9 +71,8 @@ class YTDLPP_EXPORT Downloader {
 						std::forward<decltype(handler)>(handler)};
 
 				async_download_impl(
-					info, std::move(format_selector_s), std::move(merge_format),
-					std::move(progress_cb), std::move(any_handler),
-					std::move(handler_ex));
+					info, std::move(options), std::move(progress_cb),
+					std::move(any_handler), std::move(handler_ex));
 			},
 			token);
 	}
@@ -75,8 +81,8 @@ class YTDLPP_EXPORT Downloader {
 	struct Impl;
 
 	void async_download_impl(
-		const VideoInfo &info, std::string format_selector,
-		std::optional<std::string> merge_format, ProgressCallback progress_cb,
+		const VideoInfo &info, DownloadOptions options,
+		ProgressCallback progress_cb,
 		asio::any_completion_handler<void(Result<std::string>)> handler,
 		CompletionExecutor handler_ex);
 

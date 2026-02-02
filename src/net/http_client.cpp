@@ -15,7 +15,9 @@
 #include <boost/certify/https_verification.hpp>
 #include <boost/url.hpp>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
+#include <ytdlpp/cookie_jar.hpp>
 #include <ytdlpp/http_client.hpp>
 
 #include "utils.hpp"
@@ -285,6 +287,7 @@ struct HttpClient::Impl {
 	std::mutex sessions_mutex_;
 	std::vector<std::weak_ptr<IActiveSession>> active_sessions_;
 	std::atomic<bool> shutdown_requested_{false};
+	CookieJar cookie_jar_;
 
 	Impl(asio::any_io_executor e)
 		: ex(std::move(e)), ssl_ctx(ssl::context::tlsv12_client) {
@@ -398,10 +401,10 @@ struct HttpClient::Impl {
 
 			std::string host = u.host();
 			std::string port = u.port();
-			std::string target = u.path();
+			std::string target = std::string(u.encoded_path());
 			if (u.has_query()) {
 				target += "?";
-				target += u.query();
+				target += std::string(u.encoded_query());
 			}
 			if (target.empty()) target = "/";
 			if (port.empty()) port = (u.scheme() == "https") ? "443" : "80";
@@ -459,7 +462,11 @@ struct HttpClient::Impl {
 			// Request
 			http::request<http::string_body> req{method, target, 11};
 			req.set(http::field::host, host);
-			req.set(http::field::user_agent, "yt-dlpp/1.0");
+			// Use a realistic browser User-Agent to avoid anti-bot detection
+			req.set(
+				http::field::user_agent,
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+				"(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36");
 			req.set(http::field::connection, "keep-alive");
 			// Request compressed responses to save bandwidth
 			req.set(http::field::accept_encoding, "gzip, deflate");
@@ -528,6 +535,8 @@ HttpClient &HttpClient::operator=(HttpClient &&) noexcept = default;
 
 asio::any_io_executor HttpClient::get_executor() const { return m_impl->ex; }
 
+CookieJar &HttpClient::get_cookie_jar() { return m_impl->cookie_jar_; }
+
 void HttpClient::shutdown() {
 	if (m_impl) { m_impl->shutdown(); }
 }
@@ -566,10 +575,10 @@ class RequestSession : public IActiveSession,
 
 		std::string host = u.host();
 		std::string port = u.port();
-		std::string target = u.path();
+		std::string target = std::string(u.encoded_path());
 		if (u.has_query()) {
 			target += "?";
-			target += u.query();
+			target += std::string(u.encoded_query());
 		}
 		if (target.empty()) target = "/";
 		if (port.empty()) port = (u.scheme() == "https") ? "443" : "80";
@@ -578,9 +587,20 @@ class RequestSession : public IActiveSession,
 		req_.method(method);
 		req_.target(target);
 		req_.set(http::field::host, host);
-		req_.set(http::field::user_agent, "yt-dlpp/1.0");
+		// Use a realistic browser User-Agent to avoid anti-bot detection
+		req_.set(http::field::user_agent,
+				 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+				 "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36");
+		req_.set(http::field::referer, "https://www.youtube.com/");
 		// Request compressed responses to save bandwidth
 		req_.set(http::field::accept_encoding, "gzip, deflate");
+
+		// Add cookies from jar
+		std::string cookie_header = impl_->cookie_jar_.build_cookie_header();
+		if (!cookie_header.empty()) {
+			req_.set(http::field::cookie, cookie_header);
+		}
+
 		for (const auto &[key, value] : headers) { req_.set(key, value); }
 		if (!body_content.empty()) {
 			req_.body() = body_content;
@@ -679,12 +699,26 @@ class RequestSession : public IActiveSession,
 		std::string response_body =
 			decompress_body(res_.body(), content_encoding);
 
-		// Convert headers
+		// Convert headers - handle multi-value headers like Set-Cookie
 		std::map<std::string, std::string> res_headers;
 		for (auto const &field : res_) {
-			res_headers[std::string(field.name_string())] =
-				std::string(field.value());
+			std::string name = std::string(field.name_string());
+			std::string value = std::string(field.value());
+			// For Set-Cookie headers, append with newline to allow parsing
+			// multiple cookies. The cookie_jar parser handles this.
+			if (name == "Set-Cookie" || name == "set-cookie") {
+				auto it = res_headers.find(name);
+				if (it != res_headers.end()) {
+					it->second += "\n" + value;	 // Append with newline
+				} else {
+					res_headers[name] = value;
+				}
+			} else {
+				res_headers[name] = value;
+			}
 		}
+
+		impl_->cookie_jar_.parse_set_cookies(res_headers);
 
 		post_result(HttpResponse{
 			static_cast<int>(res_.result_int()), response_body, res_headers});
@@ -740,28 +774,40 @@ class AsyncDownloadSession
 	using CompletionExecutor = HttpClient::CompletionExecutor;
 
 	// ==========================================================================
-	// BUFFER SIZE CONSTANTS (Optimized for low-memory devices like Raspberry
-	// Pi)
+	// BUFFER SIZE CONSTANTS (Optimized for low-memory devices like
+	// Raspberry Pi)
 	// ==========================================================================
 	// kChunkSize: Size of HTTP Range request chunks. Smaller = less memory,
 	//             but more HTTP requests. 2MB is a good balance.
-	// kReadBufferSize: Size of the read buffer for body data. 256KB provides
+	// kReadBufferSize: Size of the read buffer for body data. 256KB
+	// provides
 	//                  good throughput while being memory-efficient.
 	// ==========================================================================
 	static constexpr long long kChunkSize = 2 * 1024 * 1024;  // 2MB
 	static constexpr size_t kReadBufferSize = 256 * 1024;	  // 256KB
 
 	AsyncDownloadSession(const asio::any_io_executor &ex, ssl::context &ctx,
+						 CookieJar &jar,
 						 asio::any_completion_handler<void(Result<void>)> cb,
 						 CompletionExecutor handler_ex,
 						 std::function<void(long long, long long)> progress_cb)
 		: strand_(asio::make_strand(ex)),
 		  ctx_(ctx),
+		  cookie_jar_(jar),
 		  cb_(std::move(cb)),
 		  handler_ex_(std::move(handler_ex)),
 		  progress_cb_(std::move(progress_cb)) {}
 
 	void run(const std::string &url_str, const std::string &output_path) {
+		// Ensure output directory exists [yt-dlp parity]
+		std::filesystem::path p(output_path);
+		if (p.has_parent_path()) {
+			std::error_code ec;
+			std::filesystem::create_directories(p.parent_path(), ec);
+			if (ec)
+				spdlog::warn("Failed to create directory: {}", ec.message());
+		}
+
 		outfile_.open(output_path, std::ios::binary | std::ios::out);
 		if (!outfile_.is_open()) {
 			return post_result(outcome::failure(errc::file_open_failed));
@@ -775,10 +821,10 @@ class AsyncDownloadSession
 		// Defaults
 		host_ = url_.host();
 		port_ = url_.port();
-		path_ = url_.path();
+		path_ = std::string(url_.encoded_path());
 		if (url_.has_query()) {
 			path_ += "?";
-			path_ += url_.query();
+			path_ += std::string(url_.encoded_query());
 		}
 		if (path_.empty()) path_ = "/";
 		if (port_.empty()) port_ = (url_.scheme() == "https") ? "443" : "80";
@@ -791,6 +837,7 @@ class AsyncDownloadSession
    private:
 	asio::strand<asio::any_io_executor> strand_;
 	ssl::context &ctx_;
+	CookieJar &cookie_jar_;
 	std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> stream_;
 	std::unique_ptr<tcp::resolver> resolver_;
 
@@ -900,8 +947,17 @@ class AsyncDownloadSession
 		req_.version(11);
 		req_.target(path_);
 		req_.set(http::field::host, host_);
-		req_.set(http::field::user_agent, "yt-dlpp/1.0");
+		req_.set(http::field::user_agent,
+				 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+				 "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36");
+		req_.set(http::field::referer, "https://www.youtube.com/");
 		req_.set(http::field::accept, "*/*");
+
+		// Add cookies from jar
+		std::string cookie_header = cookie_jar_.build_cookie_header();
+		if (!cookie_header.empty()) {
+			req_.set(http::field::cookie, cookie_header);
+		}
 
 		if (head_phase_) {
 			req_.method(http::verb::head);
@@ -1092,8 +1148,8 @@ void HttpClient::async_download_file_impl(
 	asio::any_completion_handler<void(Result<void>)> handler,
 	CompletionExecutor handler_ex) {
 	std::make_shared<AsyncDownloadSession>(
-		m_impl->ex, m_impl->ssl_ctx, std::move(handler), std::move(handler_ex),
-		std::move(progress_cb))
+		m_impl->ex, m_impl->ssl_ctx, m_impl->cookie_jar_, std::move(handler),
+		std::move(handler_ex), std::move(progress_cb))
 		->run(url, output_path);
 }
 

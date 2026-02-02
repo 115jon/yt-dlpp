@@ -44,6 +44,9 @@ struct YTDLPP_EXPORT AudioStreamOptions {
 	int sample_rate = 48000;  // Common rates: 44100, 48000, 96000
 	int channels = 2;		  // 1 = mono, 2 = stereo
 	SampleFormat sample_fmt = SampleFormat::S16;
+
+	/// Optional HTTP headers for the request (e.g. Cookie, User-Agent)
+	std::map<std::string, std::string> headers;
 };
 
 /// AudioStream - an async-readable audio stream backed by FFmpeg decoding.

@@ -12,7 +12,8 @@
     "spdlog",
     "utfcpp",
     "v8",
-    "zlib"
+    "zlib",
+    "gtest"
   ],
   "features": {
     "boost": {
@@ -27,6 +28,7 @@
         "boost-scope-exit",
         "boost-outcome",
         "boost-url",
+        "boost-process",
         {
           "name": "certify",
           "default-features": false,

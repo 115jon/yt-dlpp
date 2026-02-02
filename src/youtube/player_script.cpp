@@ -305,7 +305,7 @@ void PlayerScript::async_fetch(const std::string &video_id, ScriptCallback cb,
 				return cb(std::nullopt);
 			}
 
-			if (on_webpage) { on_webpage(res.body); }
+			if (on_webpage) { on_webpage(res.body, res.headers); }
 
 			auto extracted_url = extract_player_url_from_webpage(res.body);
 			if (!extracted_url) {

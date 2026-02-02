@@ -5,11 +5,28 @@
 #include <boost/charconv.hpp>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <ytdlpp/result.hpp>
 
+
 namespace ytdlpp::utils {
+
+// =============================================================================
+// String Utilities
+// =============================================================================
+
+inline std::vector<std::string> split(const std::string &s, char delimiter) {
+	std::vector<std::string> tokens;
+	std::string token;
+	std::istringstream tokenStream(s);
+	while (std::getline(tokenStream, token, delimiter)) {
+		tokens.push_back(token);
+	}
+	return tokens;
+}
 
 // =============================================================================
 // UTF-8 Validation

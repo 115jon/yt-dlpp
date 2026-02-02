@@ -1,10 +1,10 @@
 #pragma once
 
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -32,7 +32,10 @@ class PlayerScript {
 	using ScriptCallback =
 		boost::asio::any_completion_handler<void(std::optional<std::string>)>;
 
-	using WebpageCallback = std::function<void(const std::string &)>;
+	// Callback receives body and headers from the webpage response
+	using WebpageCallback =
+		std::function<void(const std::string &body,
+						   const std::map<std::string, std::string> &headers)>;
 
 	// Async fetch with bytecode support
 	// Returns script content and caches bytecode for next load

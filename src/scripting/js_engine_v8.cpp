@@ -209,7 +209,10 @@ Result<void> JsEngine::evaluate(const std::string &code) {
 	auto task = [&](v8::Isolate *isolate,
 					v8::Local<v8::Context> context) -> Result<void> {
 		v8::Local<v8::String> source;
-		if (!v8::String::NewFromUtf8(isolate, code.c_str()).ToLocal(&source)) {
+		if (!v8::String::NewFromUtf8(
+				 isolate, code.data(), v8::NewStringType::kNormal,
+				 static_cast<int>(code.length()))
+				 .ToLocal(&source)) {
 			return std::make_error_code(std::errc::invalid_argument);
 		}
 
@@ -228,9 +231,26 @@ Result<void> JsEngine::evaluate(const std::string &code) {
 		v8::Local<v8::Value> result;
 		if (!script->Run(context).ToLocal(&result)) {
 			if (try_catch.HasCaught()) {
+				v8::Local<v8::Message> message = try_catch.Message();
 				v8::String::Utf8Value error(isolate, try_catch.Exception());
-				spdlog::error(
-					"JsEngine: Runtime Error: {}", *error ? *error : "Unknown");
+				std::string error_msg =
+					(error.length() > 0 && *error)
+						? std::string(*error, error.length())
+						: "Unknown";
+
+				if (!message.IsEmpty()) {
+					v8::String::Utf8Value filename(
+						isolate, message->GetScriptOrigin().ResourceName());
+					int linenum = message->GetLineNumber(context).FromMaybe(-1);
+					spdlog::error(
+						"JsEngine: Runtime Error: {} at {}:{}", error_msg,
+						(filename.length() > 0 && *filename)
+							? std::string(*filename, filename.length())
+							: "unknown",
+						linenum);
+				} else {
+					spdlog::error("JsEngine: Runtime Error: {}", error_msg);
+				}
 			}
 			return std::make_error_code(std::errc::invalid_argument);
 		}
@@ -243,7 +263,10 @@ Result<std::string> JsEngine::evaluate_and_get(const std::string &code) {
 	auto task = [&](v8::Isolate *isolate,
 					v8::Local<v8::Context> context) -> Result<std::string> {
 		v8::Local<v8::String> source;
-		if (!v8::String::NewFromUtf8(isolate, code.c_str()).ToLocal(&source))
+		if (!v8::String::NewFromUtf8(
+				 isolate, code.data(), v8::NewStringType::kNormal,
+				 static_cast<int>(code.length()))
+				 .ToLocal(&source))
 			return std::make_error_code(std::errc::invalid_argument);
 
 		v8::Local<v8::Script> script;
@@ -260,15 +283,33 @@ Result<std::string> JsEngine::evaluate_and_get(const std::string &code) {
 		v8::Local<v8::Value> result;
 		if (!script->Run(context).ToLocal(&result)) {
 			if (try_catch.HasCaught()) {
+				v8::Local<v8::Message> message = try_catch.Message();
 				v8::String::Utf8Value error(isolate, try_catch.Exception());
-				spdlog::error("JsEngine: Runtime Error (get): {}",
-							  *error ? *error : "Unknown");
+				std::string error_msg =
+					(error.length() > 0 && *error)
+						? std::string(*error, error.length())
+						: "Unknown";
+				if (!message.IsEmpty()) {
+					v8::String::Utf8Value filename(
+						isolate, message->GetScriptOrigin().ResourceName());
+					int linenum = message->GetLineNumber(context).FromMaybe(-1);
+					spdlog::error(
+						"JsEngine: Runtime Error (get): {} at {}:{}", error_msg,
+						(filename.length() > 0 && *filename)
+							? std::string(*filename, filename.length())
+							: "unknown",
+						linenum);
+				} else {
+					spdlog::error(
+						"JsEngine: Runtime Error (get): {}", error_msg);
+				}
 			}
 			return std::make_error_code(std::errc::invalid_argument);
 		}
 
 		v8::String::Utf8Value utf8(isolate, result);
-		return std::string(*utf8);
+		return (utf8.length() > 0 && *utf8) ? std::string(*utf8, utf8.length())
+											: std::string();
 	};
 	return impl_->RunOnWorker(std::move(task));
 }
@@ -278,7 +319,10 @@ Result<std::string> JsEngine::call_function(
 	auto task = [&](v8::Isolate *isolate,
 					v8::Local<v8::Context> context) -> Result<std::string> {
 		v8::Local<v8::String> name;
-		if (!v8::String::NewFromUtf8(isolate, func_name.c_str()).ToLocal(&name))
+		if (!v8::String::NewFromUtf8(
+				 isolate, func_name.data(), v8::NewStringType::kNormal,
+				 static_cast<int>(func_name.length()))
+				 .ToLocal(&name))
 			return std::make_error_code(std::errc::invalid_argument);
 
 		v8::Local<v8::Value> val;
@@ -292,7 +336,10 @@ Result<std::string> JsEngine::call_function(
 		argv.reserve(args.size());
 		for (const auto &arg : args) {
 			v8::Local<v8::String> s;
-			if (v8::String::NewFromUtf8(isolate, arg.c_str()).ToLocal(&s))
+			if (v8::String::NewFromUtf8(
+					isolate, arg.data(), v8::NewStringType::kNormal,
+					static_cast<int>(arg.length()))
+					.ToLocal(&s))
 				argv.push_back(s);
 		}
 
@@ -303,14 +350,17 @@ Result<std::string> JsEngine::call_function(
 				 .ToLocal(&result)) {
 			if (try_catch.HasCaught()) {
 				v8::String::Utf8Value error(isolate, try_catch.Exception());
-				spdlog::error(
-					"JsEngine: Call Error: {}", *error ? *error : "Unknown");
+				spdlog::error("JsEngine: Call Error: {}",
+							  (error.length() > 0 && *error)
+								  ? std::string(*error, error.length())
+								  : "Unknown");
 			}
 			return std::make_error_code(std::errc::operation_canceled);
 		}
 
 		v8::String::Utf8Value utf8(isolate, result);
-		return std::string(*utf8);
+		return (utf8.length() > 0 && *utf8) ? std::string(*utf8, utf8.length())
+											: std::string();
 	};
 	return impl_->RunOnWorker(std::move(task));
 }
@@ -326,7 +376,10 @@ void JsEngine::async_evaluate_impl(
 					v8::Isolate *isolate,
 					v8::Local<v8::Context> context) -> Result<void> {
 		v8::Local<v8::String> source;
-		if (!v8::String::NewFromUtf8(isolate, code.c_str()).ToLocal(&source)) {
+		if (!v8::String::NewFromUtf8(
+				 isolate, code.data(), v8::NewStringType::kNormal,
+				 static_cast<int>(code.length()))
+				 .ToLocal(&source)) {
 			return std::make_error_code(std::errc::invalid_argument);
 		}
 		v8::Local<v8::Script> script;
@@ -334,8 +387,10 @@ void JsEngine::async_evaluate_impl(
 		if (!v8::Script::Compile(context, source).ToLocal(&script)) {
 			if (try_catch.HasCaught()) {
 				v8::String::Utf8Value error(isolate, try_catch.Exception());
-				spdlog::error(
-					"JsEngine: Compile Error: {}", *error ? *error : "Unknown");
+				spdlog::error("JsEngine: Compile Error: {}",
+							  (error.length() > 0 && *error)
+								  ? std::string(*error, error.length())
+								  : "Unknown");
 			}
 			return std::make_error_code(std::errc::invalid_argument);
 		}
@@ -343,8 +398,10 @@ void JsEngine::async_evaluate_impl(
 		if (!script->Run(context).ToLocal(&result)) {
 			if (try_catch.HasCaught()) {
 				v8::String::Utf8Value error(isolate, try_catch.Exception());
-				spdlog::error(
-					"JsEngine: Runtime Error: {}", *error ? *error : "Unknown");
+				spdlog::error("JsEngine: Runtime Error: {}",
+							  (error.length() > 0 && *error)
+								  ? std::string(*error, error.length())
+								  : "Unknown");
 			}
 			return std::make_error_code(std::errc::invalid_argument);
 		}
@@ -360,7 +417,10 @@ void JsEngine::async_evaluate_and_get_impl(
 					v8::Isolate *isolate,
 					v8::Local<v8::Context> context) -> Result<std::string> {
 		v8::Local<v8::String> source;
-		if (!v8::String::NewFromUtf8(isolate, code.c_str()).ToLocal(&source))
+		if (!v8::String::NewFromUtf8(
+				 isolate, code.data(), v8::NewStringType::kNormal,
+				 static_cast<int>(code.length()))
+				 .ToLocal(&source))
 			return std::make_error_code(std::errc::invalid_argument);
 		v8::Local<v8::Script> script;
 		v8::TryCatch try_catch(isolate);
@@ -375,14 +435,32 @@ void JsEngine::async_evaluate_and_get_impl(
 		v8::Local<v8::Value> result;
 		if (!script->Run(context).ToLocal(&result)) {
 			if (try_catch.HasCaught()) {
+				v8::Local<v8::Message> message = try_catch.Message();
 				v8::String::Utf8Value error(isolate, try_catch.Exception());
-				spdlog::error("JsEngine: Runtime Error (get): {}",
-							  *error ? *error : "Unknown");
+				std::string error_msg =
+					(error.length() > 0 && *error)
+						? std::string(*error, error.length())
+						: "Unknown";
+				if (!message.IsEmpty()) {
+					v8::String::Utf8Value filename(
+						isolate, message->GetScriptOrigin().ResourceName());
+					int linenum = message->GetLineNumber(context).FromMaybe(-1);
+					spdlog::error(
+						"JsEngine: Runtime Error (get): {} at {}:{}", error_msg,
+						(filename.length() > 0 && *filename)
+							? std::string(*filename, filename.length())
+							: "unknown",
+						linenum);
+				} else {
+					spdlog::error(
+						"JsEngine: Runtime Error (get): {}", error_msg);
+				}
 			}
 			return std::make_error_code(std::errc::invalid_argument);
 		}
 		v8::String::Utf8Value utf8(isolate, result);
-		return std::string(*utf8);
+		return (utf8.length() > 0 && *utf8) ? std::string(*utf8, utf8.length())
+											: std::string();
 	};
 	impl_->RunOnWorkerAsync(std::move(task), std::move(handler));
 }
@@ -394,7 +472,10 @@ void JsEngine::async_call_function_impl(
 					v8::Isolate *isolate,
 					v8::Local<v8::Context> context) -> Result<std::string> {
 		v8::Local<v8::String> name;
-		if (!v8::String::NewFromUtf8(isolate, func_name.c_str()).ToLocal(&name))
+		if (!v8::String::NewFromUtf8(
+				 isolate, func_name.data(), v8::NewStringType::kNormal,
+				 static_cast<int>(func_name.length()))
+				 .ToLocal(&name))
 			return std::make_error_code(std::errc::invalid_argument);
 
 		v8::Local<v8::Value> val;
@@ -408,7 +489,10 @@ void JsEngine::async_call_function_impl(
 		argv.reserve(args.size());
 		for (const auto &arg : args) {
 			v8::Local<v8::String> s;
-			if (v8::String::NewFromUtf8(isolate, arg.c_str()).ToLocal(&s))
+			if (v8::String::NewFromUtf8(
+					isolate, arg.data(), v8::NewStringType::kNormal,
+					static_cast<int>(arg.length()))
+					.ToLocal(&s))
 				argv.push_back(s);
 		}
 
@@ -419,16 +503,94 @@ void JsEngine::async_call_function_impl(
 				 .ToLocal(&result)) {
 			if (try_catch.HasCaught()) {
 				v8::String::Utf8Value error(isolate, try_catch.Exception());
-				spdlog::error(
-					"JsEngine: Call Error: {}", *error ? *error : "Unknown");
+				spdlog::error("JsEngine: Call Error: {}",
+							  (error.length() > 0 && *error)
+								  ? std::string(*error, error.length())
+								  : "Unknown");
 			}
 			return std::make_error_code(std::errc::operation_canceled);
 		}
 
 		v8::String::Utf8Value utf8(isolate, result);
-		return std::string(*utf8);
+		return (utf8.length() > 0 && *utf8) ? std::string(*utf8, utf8.length())
+											: std::string();
 	};
 	impl_->RunOnWorkerAsync(std::move(task), std::move(handler));
+}
+
+Result<std::string> JsEngine::generate_po_token(
+	const std::string &challenge_js, const std::string &integrity_token,
+	const std::string &visitor_data) {
+	auto task = [&](v8::Isolate *isolate,
+					v8::Local<v8::Context> context) -> Result<std::string> {
+		// Build the JavaScript code to execute the challenge
+		// The challenge JS typically defines a function that takes the
+		// integrity token and returns a signed token
+		std::string js_code = R"JS(
+(function() {
+    // Store inputs for the challenge function
+    var _integrityToken = ")JS" +
+							  integrity_token + R"JS(";
+    var _visitorData = ")JS" + visitor_data +
+							  R"JS(";
+
+    // Execute the challenge code
+)JS" + challenge_js + R"JS(
+
+    // The challenge should define a function that generates the PO token
+    // Try common function names used by YouTube
+    if (typeof generateToken === 'function') {
+        return generateToken(_integrityToken, _visitorData);
+    }
+    if (typeof signToken === 'function') {
+        return signToken(_integrityToken);
+    }
+    if (typeof bg === 'object' && bg && typeof bg.sign === 'function') {
+        return bg.sign(_integrityToken);
+    }
+
+    // If no known function found, return the integrity token as-is
+    // (fallback for when challenge doesn't require execution)
+    return _integrityToken;
+})();
+)JS";
+
+		v8::Local<v8::String> source;
+		if (!v8::String::NewFromUtf8(
+				 isolate, js_code.data(), v8::NewStringType::kNormal,
+				 static_cast<int>(js_code.length()))
+				 .ToLocal(&source)) {
+			return std::make_error_code(std::errc::invalid_argument);
+		}
+
+		v8::Local<v8::Script> script;
+		v8::TryCatch try_catch(isolate);
+		if (!v8::Script::Compile(context, source).ToLocal(&script)) {
+			if (try_catch.HasCaught()) {
+				v8::String::Utf8Value error(isolate, try_catch.Exception());
+				spdlog::error("JsEngine: PO Token Compile Error: {}",
+							  *error ? *error : "Unknown");
+			}
+			return std::make_error_code(std::errc::invalid_argument);
+		}
+
+		v8::Local<v8::Value> result;
+		if (!script->Run(context).ToLocal(&result)) {
+			if (try_catch.HasCaught()) {
+				v8::String::Utf8Value error(isolate, try_catch.Exception());
+				spdlog::error("JsEngine: PO Token Runtime Error: {}",
+							  (error.length() > 0 && *error)
+								  ? std::string(*error, error.length())
+								  : "Unknown");
+			}
+			return std::make_error_code(std::errc::invalid_argument);
+		}
+
+		v8::String::Utf8Value utf8(isolate, result);
+		return (utf8.length() > 0 && *utf8) ? std::string(*utf8, utf8.length())
+											: std::string();
+	};
+	return impl_->RunOnWorker(std::move(task));
 }
 
 }  // namespace ytdlpp::scripting

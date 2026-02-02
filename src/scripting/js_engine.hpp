@@ -59,6 +59,12 @@ class JsEngine {
 									  const std::vector<std::string> &args);
 	Result<std::string> evaluate_and_get(const std::string &code);
 
+	// PO Token generation - executes JavaScript challenge code
+	// This is used by the WebPoTokenProvider to solve BotGuard challenges
+	Result<std::string> generate_po_token(const std::string &challenge_js,
+										  const std::string &integrity_token,
+										  const std::string &visitor_data);
+
    private:
 	struct Impl;
 	std::unique_ptr<Impl> impl_;

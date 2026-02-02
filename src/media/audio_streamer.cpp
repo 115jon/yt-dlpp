@@ -1,5 +1,6 @@
 #include <spdlog/spdlog.h>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/cancellation_signal.hpp>
@@ -365,13 +366,43 @@ struct AudioStreamer::Impl {
 			AVDictionary *av_options = nullptr;
 			av_dict_set(&av_options, "reconnect", "1", 0);
 			av_dict_set(&av_options, "reconnect_streamed", "1", 0);
-			av_dict_set(&av_options, "reconnect_at_eof", "1", 0);
+			// NOTE: reconnect_at_eof removed - it causes infinite reconnection
+			// for non-live streams (YouTube VOD) since FFmpeg keeps trying to
+			// read past the valid content. Only useful for live streams.
 			av_dict_set(&av_options, "reconnect_delay_max", "5", 0);
-			av_dict_set(
-				&av_options, "user_agent",
+
+			// Use custom headers if provided
+			std::string user_agent =
 				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-				"(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-				0);
+				"(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
+			std::string cookies;
+
+			for (const auto &[key, value] : options.headers) {
+				if (boost::iequals(key, "User-Agent")) {
+					user_agent = value;
+				} else if (boost::iequals(key, "Cookie")) {
+					cookies = value;
+				} else {
+					// Add other headers via "headers" option string for FFmpeg
+					// (Wait, FFmpeg headers option is a CRLF-separated string)
+				}
+			}
+
+			av_dict_set(&av_options, "user_agent", user_agent.c_str(), 0);
+			if (!cookies.empty()) {
+				av_dict_set(&av_options, "cookies",
+							cookies.size() > 0 ? cookies.c_str() : nullptr, 0);
+			}
+
+			if (!options.headers.empty()) {
+				std::string headers_str;
+				for (const auto &[key, value] : options.headers) {
+					headers_str += key + ": " + value + "\r\n";
+					spdlog::debug(
+						"AudioStream: Adding header {}: {}", key, value);
+				}
+				av_dict_set(&av_options, "headers", headers_str.c_str(), 0);
+			}
 
 			BOOST_SCOPE_EXIT_ALL(&av_options) { av_dict_free(&av_options); };
 

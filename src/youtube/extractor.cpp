@@ -1,20 +1,44 @@
+#include <fmt/ranges.h>
 #include <spdlog/spdlog.h>
 
+#include <boost/algorithm/string.hpp>
 #include <boost/regex.hpp>
 #include <boost/url.hpp>
 #include <fstream>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <set>
+#include <ytdlpp/cookie_jar.hpp>
 #include <ytdlpp/ejs_solver.hpp>
 #include <ytdlpp/extractor.hpp>
+#include <ytdlpp/extractor_args.hpp>
 
 #include "decipher.hpp"
+#include "hls_parser.hpp"
 #include "innertube.hpp"
 #include "player_script.hpp"
 #include "scripting/js_engine.hpp"
 #include "utils.hpp"
 
 namespace ytdlpp::youtube {
+
+// Map friendly client names to InnertubeContext objects
+static std::optional<InnertubeContext> get_client_by_name(
+	const std::string &name) {
+	static const std::map<std::string, InnertubeContext> clients = {
+		{"android_sdkless", Innertube::CLIENT_ANDROID_SDKLESS},
+		{"android", Innertube::CLIENT_ANDROID},
+		{"web", Innertube::CLIENT_WEB},
+		{"web_safari", Innertube::CLIENT_WEB_SAFARI},
+		{"tv", Innertube::CLIENT_TV},
+		{"ios", Innertube::CLIENT_IOS},
+		{"mweb", Innertube::CLIENT_MWEB},
+		{"android_vr", Innertube::CLIENT_ANDROID_VR},
+	};
+	auto it = clients.find(name);
+	if (it != clients.end()) return it->second;
+	return std::nullopt;
+}
 
 // Helper to extract video ID
 static std::string extract_video_id(const std::string &url_str) {
@@ -54,18 +78,27 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 	std::atomic<bool> cancelled{false};
 	VideoInfo collected_info;  // Store info being built
 
-	static const std::vector<InnertubeContext> &get_clients();
+	// Filtered list of clients to use (passed from Impl)
+	std::vector<InnertubeContext> clients_;
 
 	AsyncSession(std::shared_ptr<net::HttpClient> h,
 				 std::shared_ptr<scripting::JsEngine> j, std::string u,
-				 InfoHandler handler, CompletionExecutor handler_ex)
+				 InfoHandler handler, CompletionExecutor handler_ex,
+				 std::vector<InnertubeContext> clients)
 		: http(std::move(h)),
 		  js(std::move(j)),
 		  url(std::move(u)),
 		  handler(std::move(handler)),
 		  handler_ex(std::move(handler_ex)),
 		  player_script(*http),
-		  decipherer(*js) {}
+		  decipherer(*js),
+		  clients_(std::move(clients)) {
+		// Initialize with essential YouTube consent cookies
+		// These are required to avoid bot detection
+		auto &jar = http->get_cookie_jar();
+		if (!jar.has("PREF")) jar.set("PREF", "hl=en&tz=UTC");
+		if (!jar.has("SOCS")) jar.set("SOCS", "CAI");
+	}
 
 	void cancel() { cancelled = true; }
 
@@ -93,8 +126,14 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 				if (self->cancelled) return;
 				self->on_script(std::move(content));
 			},
-			[self](const std::string &webpage) {
+			[self](const std::string &webpage,
+				   const std::map<std::string, std::string> &headers) {
 				if (self->cancelled) return;
+				// Capture cookies from the response for later API requests
+				self->http->get_cookie_jar().parse_set_cookies(headers);
+				spdlog::debug(
+					"Captured cookies from webpage response (jar size={})",
+					self->http->get_cookie_jar().size());
 				self->extract_web_tokens(webpage);
 			});
 	}
@@ -111,6 +150,23 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			if (boost::regex_search(player_url, match, re)) {
 				if (match.size() > 1) { player_id = match.str(1); }
 			}
+
+			// Extract signature timestamp from player script if not already
+			// found
+			if (signature_timestamp_ == 0) {
+				try {
+					// Match signatureTimestamp: 12345 or sts: 12345
+					static const boost::regex re_sts(
+						R"RE((?:signatureTimestamp|sts)\s*:\s*(\d{5}))RE");
+					boost::smatch sts_match;
+					if (boost::regex_search(*content, sts_match, re_sts)) {
+						signature_timestamp_ = std::stoll(sts_match[1].str());
+						spdlog::debug("Extracted STS from player script: {}",
+									  signature_timestamp_);
+					}
+				} catch (...) {}
+			}
+
 			self->decipherer.async_load_functions(
 				*content,
 				[self](bool success) {
@@ -135,44 +191,83 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 
 	// Extract visitor data from ytcfg.set({...}) in HTML
 	std::string extract_visitor_data(const std::string &html) {
-		// Look for ytcfg.set({...})
+		// Look for ytcfg.set({...}) - there may be multiple ytcfg.set calls
 		std::string search = "ytcfg.set(";
-		size_t pos = html.find(search);
-		if (pos == std::string::npos) return "";
+		size_t search_pos = 0;
 
-		pos += search.length();
-		if (pos >= html.length() || html[pos] != '{') return "";
+		while (search_pos < html.length()) {
+			size_t pos = html.find(search, search_pos);
+			if (pos == std::string::npos) {
+				spdlog::debug(
+					"No more ytcfg.set found in HTML from pos {}", search_pos);
+				return "";
+			}
 
-		// Find matching closing brace
-		int brace_count = 1;
-		size_t start = pos;
-		pos++;
-		while (pos < html.length() && brace_count > 0) {
-			if (html[pos] == '{')
-				brace_count++;
-			else if (html[pos] == '}')
-				brace_count--;
+			pos += search.length();
+
+			// Skip whitespace after ytcfg.set(
+			while (pos < html.length() &&
+				   (html[pos] == ' ' || html[pos] == '\n' ||
+					html[pos] == '\r' || html[pos] == '\t')) {
+				pos++;
+			}
+
+			if (pos >= html.length() || html[pos] != '{') {
+				// Not the right format, continue searching
+				search_pos = pos;
+				continue;
+			}
+
+			// Find matching closing brace
+			int brace_count = 1;
+			size_t start = pos;
 			pos++;
+			while (pos < html.length() && brace_count > 0) {
+				if (html[pos] == '{')
+					brace_count++;
+				else if (html[pos] == '}')
+					brace_count--;
+				pos++;
+			}
+
+			if (brace_count != 0) {
+				spdlog::debug("ytcfg JSON brace mismatch");
+				return "";
+			}
+
+			std::string json_str = html.substr(start, pos - start);
+			// Parse without throwing
+			auto ytcfg = nlohmann::json::parse(json_str, nullptr, false);
+			if (ytcfg.is_discarded()) {
+				spdlog::debug(
+					"ytcfg JSON parse failed (len={})", json_str.size());
+				return "";
+			}
+
+			spdlog::debug("ytcfg parsed successfully ({} keys)", ytcfg.size());
+
+			// Try multiple paths for VISITOR_DATA
+			if (ytcfg.contains("VISITOR_DATA")) {
+				auto vd = ytcfg["VISITOR_DATA"].get<std::string>();
+				spdlog::debug("Found VISITOR_DATA: {}...", vd.substr(0, 20));
+				return vd;
+			}
+			if (ytcfg.contains("INNERTUBE_CONTEXT") &&
+				ytcfg["INNERTUBE_CONTEXT"].contains("client") &&
+				ytcfg["INNERTUBE_CONTEXT"]["client"].contains("visitorData")) {
+				auto vd = ytcfg["INNERTUBE_CONTEXT"]["client"]["visitorData"]
+							  .get<std::string>();
+				spdlog::debug("Found visitorData in INNERTUBE_CONTEXT: {}...",
+							  vd.substr(0, 20));
+				return vd;
+			}
+
+			spdlog::debug(
+				"No VISITOR_DATA found in this ytcfg, continuing search");
+			search_pos = pos;
 		}
 
-		if (brace_count != 0) return "";
-
-		std::string json_str = html.substr(start, pos - start);
-		// Parse without throwing
-		auto ytcfg = nlohmann::json::parse(json_str, nullptr, false);
-		if (ytcfg.is_discarded()) return "";
-
-		// Try multiple paths for VISITOR_DATA
-		if (ytcfg.contains("VISITOR_DATA")) {
-			return ytcfg["VISITOR_DATA"].get<std::string>();
-		}
-		if (ytcfg.contains("INNERTUBE_CONTEXT") &&
-			ytcfg["INNERTUBE_CONTEXT"].contains("client") &&
-			ytcfg["INNERTUBE_CONTEXT"]["client"].contains("visitorData")) {
-			return ytcfg["INNERTUBE_CONTEXT"]["client"]["visitorData"]
-				.get<std::string>();
-		}
-
+		// No valid ytcfg found
 		return "";
 	}
 
@@ -198,8 +293,8 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 
 				if (res.has_value() && res.value().status_code == 200) {
 					self->tv_visitor_data_ = self->extract_visitor_data(
-						res.value()
-							.body);	 // Keep TV extraction as is or merge logic?
+						res.value().body);	// Keep TV extraction as is or
+											// merge logic?
 					// Actually tv_visitor_data is specific to TV endpoint?
 					// "X-Goog-Visitor-Id" header for TV client.
 					// We will keep it separate.
@@ -220,9 +315,13 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 	// Store Web visitor data and PO Token
 	std::string web_visitor_data_;
 	std::string po_token_;
+	// Signature timestamp (STS) for web clients - extracted from ytcfg or
+	// player
+	int64_t signature_timestamp_ = 0;
 
 	// Parse format metadata fields (sync part)
-	VideoFormat parse_format_metadata(const nlohmann::json &fmt_json) {
+	VideoFormat parse_format_metadata(const nlohmann::json &fmt_json,
+									  const std::string &client_name = "") {
 		VideoFormat fmt{};
 		fmt.itag = fmt_json.value("itag", 0);
 		fmt.url = fmt_json.value("url", "");
@@ -243,6 +342,25 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 				fmt_json.value("contentLength", "0"));
 		}
 
+		// Set source_preference based on itag and client
+		// Default for direct formats
+		fmt.source_preference = -1;
+
+		// Penalize known problematic itags (like yt-dlp does)
+		if (fmt.itag == 22) {
+			fmt.source_preference -= 5;	 // Known damaged format
+		}
+
+		// Bonus for premium clients
+		if (client_name.find("premium") != std::string::npos ||
+			client_name.find("tv") != std::string::npos ||
+			client_name.find("web_creator") != std::string::npos) {
+			fmt.source_preference += 100;
+		}
+
+		// Set protocol for direct formats
+		fmt.protocol = "https";
+
 		// Build format_id - yt-dlp uses itag + audio track suffix for
 		// uniqueness
 		std::string format_id_suffix;
@@ -251,10 +369,10 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			std::string display_name = at.value("displayName", "");
 			std::string id = at.value("id", "");  // e.g., "en-GB.4"
 			bool is_default = at.value("audioIsDefault", false);
-			bool is_drc = fmt_json.value("isDrc", false);
 
 			spdlog::debug(
-				"itag={}: audioTrack.id='{}', displayName='{}', isDefault={}",
+				"itag={}: audioTrack.id='{}', displayName='{}', "
+				"isDefault={}",
 				fmt.itag, id, display_name, is_default);
 
 			// Extract language code from audioTrack.id
@@ -268,14 +386,6 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 				// Use full audioTrack.id as format_id suffix (handles
 				// multi-lang)
 				format_id_suffix = id;
-			}
-
-			// Handle DRC suffix (like yt-dlp)
-			if (is_drc) {
-				if (format_id_suffix.empty())
-					format_id_suffix = "drc";
-				else
-					format_id_suffix += "-drc";
 			}
 
 			std::string dn_lower = display_name;
@@ -292,6 +402,15 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			} else {
 				fmt.language_preference = -1;
 			}
+		}
+
+		// Handle DRC suffix (like yt-dlp)
+		bool is_drc = fmt_json.value("isDrc", false);
+		if (is_drc) {
+			if (format_id_suffix.empty())
+				format_id_suffix = "drc";
+			else
+				format_id_suffix += "-drc";
 		}
 
 		// Build final format_id: itag or itag-suffix
@@ -353,21 +472,50 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		if (r.has_value()) {
 			boost::urls::url url_obj = *r;
 			std::string n_val;
+			bool is_query = false;
+
+			// Check query params
 			for (auto p : url_obj.params()) {
 				if (p.key == "n") {
 					n_val = p.value;
+					is_query = true;
 					break;
 				}
 			}
+
+			// If not in query, check path segment /n/VALUE/
+			if (n_val.empty()) {
+				std::string path = url_obj.path();
+				static const boost::regex re(R"(/n/([^/]+)/)");
+				boost::smatch match;
+				if (boost::regex_search(path, match, re)) {
+					n_val = match[1].str();
+				}
+			}
+
 			if (!n_val.empty()) {
+				auto self = shared_from_this();
 				decipherer.async_transform_n(
-					n_val, [this, url_obj, cb](std::string new_n) mutable {
-						boost::urls::params_ref params = url_obj.params();
-						auto it = params.find("n");
-						if (it != params.end())
-							params.replace(it, {"n", new_n});
-						cb(std::string(
-							url_obj.buffer().data(), url_obj.buffer().size()));
+					n_val, [self, url_obj, is_query, n_raw = n_val,
+							cb](std::string new_n) mutable {
+						if (!new_n.empty()) {
+							if (is_query) {
+								auto params = url_obj.params();
+								auto it = params.find("n");
+								if (it != params.end())
+									params.replace(it, {"n", new_n});
+							} else {
+								std::string path = url_obj.path();
+								static const boost::regex re(R"(/n/([^/]+)/)");
+								url_obj.set_path(boost::regex_replace(
+									path, re, "/n/" + new_n + "/"));
+							}
+							spdlog::debug(
+								"Transformed n: {} -> {}", n_raw, new_n);
+						}
+						// Convert boost::urls::pct_string_view to std::string
+						auto buf = url_obj.buffer();
+						cb(std::string(buf.data(), buf.size()));
 					});
 				return;
 			}
@@ -387,12 +535,13 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		}
 
 		// 2. PO Token
-		// yt-dlp reference: relies on external 'bg_utils' provider or cached
-		// WebPO. Core yt-dlp does not scrape this from HTML by default, but we
-		// attempt to do so to support "WebPO" strategy if the token is present
-		// in ytcfg. It can be in ytcfg.set({ "INNERTUBE_CONTEXT": { ...,
-		// "serviceIntegrityDimensions": { "poToken": "..." } } }) Regex for
-		// "poToken":"..." allowing single/double quotes
+		// yt-dlp reference: relies on external 'bg_utils' provider or
+		// cached WebPO. Core yt-dlp does not scrape this from HTML by
+		// default, but we attempt to do so to support "WebPO" strategy if
+		// the token is present in ytcfg. It can be in ytcfg.set({
+		// "INNERTUBE_CONTEXT": { ..., "serviceIntegrityDimensions": {
+		// "poToken": "..." } } }) Regex for "poToken":"..." allowing
+		// single/double quotes
 		try {
 			static const boost::regex re_pot(
 				R"RE(["']poToken["']\s*:\s*["']([^"']+)["'])RE");
@@ -403,8 +552,24 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 					"Extracted PO Token: {}...", po_token_.substr(0, 20));
 			} else {
 				spdlog::debug(
-					"PO Token not found in webpage via regex (normal if not "
+					"PO Token not found in webpage via regex (normal if "
+					"not "
 					"served by YouTube)");
+			}
+		} catch (...) {}
+
+		// 3. Signature Timestamp (STS)
+		// Required for web clients to tell the API which player version is in
+		// use
+		try {
+			// First try ytcfg "STS" key
+			static const boost::regex re_sts_ytcfg(
+				R"RE("STS"\s*:\s*(\d{5}))RE");
+			boost::smatch m;
+			if (boost::regex_search(html, m, re_sts_ytcfg)) {
+				signature_timestamp_ = std::stoll(m[1].str());
+				spdlog::debug(
+					"Extracted STS from ytcfg: {}", signature_timestamp_);
 			}
 		} catch (...) {}
 	}
@@ -414,10 +579,9 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		if (cancelled) return;
 
 		auto self = shared_from_this();
-		const auto &clients = get_clients();
-		pending_clients_ = clients.size();
+		pending_clients_ = clients_.size();
 
-		for (const auto &client : clients) {
+		for (const auto &client : clients_) {
 			// Create friendly names for logging (matches yt-dlp output)
 			std::string friendly_name = client.client_name;
 			if (client.client_name == "WEB" &&
@@ -451,17 +615,62 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 							auto &json = res.value();
 							if (json.contains("playabilityStatus") &&
 								json["playabilityStatus"]["status"] != "OK") {
-								spdlog::warn(
-									"Video unplayable with client {}: {}", name,
+								std::string status =
 									json["playabilityStatus"]["status"]
-										.get<std::string>());
+										.get<std::string>();
+								std::string reason =
+									json["playabilityStatus"].value(
+										"reason", "");
+								spdlog::warn(
+									"Video unplayable with client {}: {} - "
+									"{}",
+									name, status, reason);
+
+								// Log if there's any streaming data despite
+								// UNPLAYABLE status
+								if (json.contains("streamingData")) {
+									spdlog::debug(
+										"Client {} has streamingData "
+										"despite "
+										"UNPLAYABLE",
+										name);
+									if (json["streamingData"].contains(
+											"hlsManifestUrl")) {
+										spdlog::info(
+											"Client {} has HLS manifest "
+											"URL!",
+											name);
+										// Still add this response - HLS may
+										// work
+										self->responses.emplace_back(
+											name, json);
+									}
+								}
 							} else {
+								// Log streaming data info
+								if (json.contains("streamingData")) {
+									bool has_formats =
+										json["streamingData"].contains(
+											"formats");
+									bool has_adaptive =
+										json["streamingData"].contains(
+											"adaptiveFormats");
+									bool has_hls =
+										json["streamingData"].contains(
+											"hlsManifestUrl");
+									spdlog::debug(
+										"Client {} streamingData: "
+										"formats={}, "
+										"adaptive={}, hls={}",
+										name, has_formats, has_adaptive,
+										has_hls);
+								}
 								self->responses.emplace_back(
 									name, std::move(json));
 							}
 						}
-						self->pending_clients_--;
 					}
+					self->pending_clients_--;
 
 					// Check if all clients have responded
 					if (self->pending_clients_ == 0) { self->finish(); }
@@ -483,6 +692,8 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		if (client.client_name == "WEB" || client.client_name == "MWEB") {
 			v_data = web_visitor_data_;
 			p_tok = po_token_;
+			spdlog::debug("Using WEB visitor_data (len={}) for client {}",
+						  v_data.size(), client.client_name);
 		}
 
 		nlohmann::json payload =
@@ -491,15 +702,44 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		payload["contentCheckOk"] = true;
 		payload["racyCheckOk"] = true;
 
-		auto headers = Innertube::get_headers(client);
+		// Add playbackContext (required by yt-dlp for proper responses)
+		nlohmann::json content_playback_context = {
+			{"html5Preference", "HTML5_PREF_WANTS"}};
+
+		// Add signatureTimestamp for web clients (required to tell API which
+		// player version is in use)
+		if (signature_timestamp_ > 0) {
+			content_playback_context["signatureTimestamp"] =
+				signature_timestamp_;
+			spdlog::debug("Using signatureTimestamp: {}", signature_timestamp_);
+		}
+
+		payload["playbackContext"] = {
+			{"contentPlaybackContext", content_playback_context}};
+
+		// Pass visitor_data to headers for proper authentication
+		auto headers = Innertube::get_headers(client, v_data);
+
+		// Use the cookie jar for session cookies (captured from webpage
+		// response) plus our essential consent cookies
+		std::string cookie_header =
+			http->get_cookie_jar().build_cookie_header();
+		if (!cookie_header.empty()) {
+			headers["Cookie"] = cookie_header;
+			spdlog::debug("Using {} cookies for API request",
+						  http->get_cookie_jar().size());
+		}
 
 		// Add visitor data for TV client (helps with authentication)
 		if (client.client_name == "TVHTML5" && !tv_visitor_data_.empty()) {
 			headers["X-Goog-Visitor-Id"] = tv_visitor_data_;
 		}
 
+		// Add prettyPrint=false to URL (matches yt-dlp)
+		std::string api_url_with_params = api_url + "?prettyPrint=false";
+
 		http->async_post(
-			api_url, payload.dump(),
+			api_url_with_params, payload.dump(),
 			[client_name = client.client_name,
 			 cb = std::move(callback)](Result<net::HttpResponse> res_result) {
 				if (res_result.has_error()) {
@@ -515,8 +755,16 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 
 				auto json = nlohmann::json::parse(r.body, nullptr, false);
 				if (json.is_discarded()) {
+					spdlog::debug(
+						"Failed to parse response: {}", r.body.substr(0, 500));
 					cb(outcome::failure(errc::json_parse_error));
 				} else {
+					// Log the playability status for debugging
+					if (json.contains("playabilityStatus")) {
+						spdlog::debug(
+							"Player API response playabilityStatus: {}",
+							json["playabilityStatus"].dump().substr(0, 500));
+					}
 					cb(json);
 				}
 			},
@@ -624,29 +872,122 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			bool unlisted = mf.value("isUnlisted", false);
 			collected_info.availability = unlisted ? "unlisted" : "public";
 		}
+
+		extract_storyboards(json);
+	}
+
+	void extract_storyboards(const nlohmann::json &json) {
+		auto spec_raw = utils::traverse_obj<std::string>(
+			json, {"storyboards", "playerStoryboardSpecRenderer", "spec"});
+		if (!spec_raw || spec_raw->empty()) return;
+
+		std::vector<std::string> parts;
+		boost::algorithm::split(
+			parts, *spec_raw, boost::algorithm::is_any_of("|"));
+		if (parts.empty()) return;
+
+		// First part is usually the base URL
+		std::string base_url_path = parts[0];
+		if (base_url_path.empty()) return;
+
+		// If it's a relative path, join with i.ytimg.com
+		std::string base_url = base_url_path;
+		if (base_url.find("http") != 0) {
+			if (base_url[0] == '/')
+				base_url = "https://i.ytimg.com" + base_url;
+			else
+				base_url = "https://i.ytimg.com/" + base_url;
+		}
+
+		// Subsequent parts are configurations
+		int storyboard_index = 0;
+		for (size_t i = 1; i < parts.size(); ++i) {
+			const auto &cfg_str = parts[i];
+			std::vector<std::string> args;
+			boost::algorithm::split(
+				args, cfg_str, boost::algorithm::is_any_of("#"));
+
+			// Expected args: width#height#frames#columns#rows#?#N#sigh
+			if (args.size() < 8) continue;
+
+			try {
+				int width = std::stoi(args[0]);
+				int height = std::stoi(args[1]);
+				int frame_count = std::stoi(args[2]);
+				int cols = std::stoi(args[3]);
+				int rows = std::stoi(args[4]);
+				const std::string &N = args[6];
+				const std::string &sigh = args[7];
+
+				// Build URL replacing $L (Level), $N (Name/Query)
+				// Level $L decreases from (parts.size() - 2) down to 0
+				int L =
+					static_cast<int>(parts.size()) - 1 - static_cast<int>(i);
+				std::string sb_url = base_url;
+				size_t pos = 0;
+				while ((pos = sb_url.find("$L")) != std::string::npos) {
+					sb_url.replace(pos, 2, std::to_string(L));
+				}
+				while ((pos = sb_url.find("$N")) != std::string::npos) {
+					sb_url.replace(pos, 2, N);
+				}
+				sb_url += "&sigh=" + sigh;
+
+				VideoFormat fmt;
+				fmt.format_id = "sb" + std::to_string(storyboard_index++);
+				fmt.url = sb_url;
+				fmt.width = width;
+				fmt.height = height;
+				fmt.columns = cols;
+				fmt.rows = rows;
+				fmt.ext = "mhtml";
+				fmt.protocol = "mhtml";
+				fmt.vcodec = "none";
+				fmt.acodec = "none";
+				fmt.source_preference = -10;
+
+				if (collected_info.duration > 0) {
+					fmt.fps = static_cast<int>(std::round(
+						static_cast<double>(frame_count) /
+						static_cast<double>(collected_info.duration)));
+				}
+
+				collected_info.formats.push_back(std::move(fmt));
+			} catch (...) { continue; }
+		}
 	}
 
 	void async_process_fmt(const nlohmann::json &fmt_json,
+						   const std::string &client_name,
 						   std::function<void(std::optional<VideoFormat>)> cb) {
-		VideoFormat fmt = parse_format_metadata(fmt_json);
+		VideoFormat fmt = parse_format_metadata(fmt_json, client_name);
+
+		// Filter out internal/hidden itags (matches yt-dlp behavior)
+		// itags 598-600 are for outdated browser or internal testing
+		if (fmt.itag >= 598 && fmt.itag <= 600) {
+			cb(std::nullopt);
+			return;
+		}
 
 		// Check signatureCipher
 		if (fmt.url.empty() && fmt_json.contains("signatureCipher")) {
 			std::string cipher = fmt_json["signatureCipher"];
 			std::string s, sp, url_raw;
 
+			std::string_view sv(cipher);
 			size_t pos = 0;
-			while (pos < cipher.length()) {
-				size_t amp = cipher.find('&', pos);
-				if (amp == std::string::npos) amp = cipher.length();
-				std::string pair = cipher.substr(pos, amp - pos);
+			while (pos < sv.length()) {
+				size_t amp = sv.find('&', pos);
+				if (amp == std::string_view::npos) amp = sv.length();
+				std::string_view pair = sv.substr(pos, amp - pos);
 				size_t eq = pair.find('=');
-				if (eq != std::string::npos) {
-					std::string key = pair.substr(0, eq);
-					// Decode value
+				if (eq != std::string_view::npos) {
+					std::string_view key = pair.substr(0, eq);
+					std::string_view val_encoded = pair.substr(eq + 1);
+
+					// Decode value safely into a string
 					std::string val;
-					auto decoded =
-						boost::urls::decode_view(pair.substr(eq + 1));
+					auto decoded = boost::urls::decode_view(val_encoded);
 					val.assign(decoded.begin(), decoded.end());
 
 					if (key == "s")
@@ -660,8 +1001,9 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			}
 
 			if (!url_raw.empty() && !s.empty()) {
+				auto self = shared_from_this();
 				decipherer.async_decipher_signature(
-					s, [this, url_raw, sp, fmt, cb](std::string sig) mutable {
+					s, [self, url_raw, sp, fmt, cb](std::string sig) mutable {
 						std::string final_url_raw = url_raw;
 						if (final_url_raw.find('?') == std::string::npos)
 							final_url_raw += "?";
@@ -669,7 +1011,7 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 							final_url_raw += "&";
 						final_url_raw += (sp.empty() ? "sig" : sp) + "=" + sig;
 
-						async_process_url_n(
+						self->async_process_url_n(
 							final_url_raw,
 							[fmt, cb](std::string final_url) mutable {
 								fmt.url = final_url;
@@ -706,8 +1048,10 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		// Extract metadata from the first response
 		extract_video_metadata(responses[0].second);
 
-		// Collect all format JSONs, tracking which clients have audioTrack
+		// Collect all format JSONs and HLS manifest URLs
 		std::vector<nlohmann::json> all_format_jsons;
+		std::vector<std::string> hls_manifest_urls;
+
 		for (const auto &[client_name, resp] : responses) {
 			if (resp.contains("streamingData")) {
 				int audio_track_count = 0;
@@ -715,7 +1059,11 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 
 				auto process_formats = [&](const nlohmann::json &formats) {
 					for (const auto &f : formats) {
-						all_format_jsons.push_back(f);
+						// Add client_name to json temporarily for
+						// source_preference calculation
+						nlohmann::json f_with_client = f;
+						f_with_client["_client_name"] = client_name;
+						all_format_jsons.push_back(f_with_client);
 						format_count++;
 						if (f.contains("audioTrack")) audio_track_count++;
 					}
@@ -726,11 +1074,90 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 				if (resp["streamingData"].contains("adaptiveFormats"))
 					process_formats(resp["streamingData"]["adaptiveFormats"]);
 
+				// Collect HLS manifest URLs for high-quality streaming
+				if (resp["streamingData"].contains("hlsManifestUrl")) {
+					std::string hls_url =
+						resp["streamingData"]["hlsManifestUrl"]
+							.get<std::string>();
+					if (!hls_url.empty()) {
+						hls_manifest_urls.push_back(hls_url);
+						spdlog::debug(
+							"{} client has HLS manifest", client_name);
+					}
+				}
+
 				spdlog::debug("{} client: {} formats, {} with audioTrack",
 							  client_name, format_count, audio_track_count);
 			}
 		}
 
+		auto self = shared_from_this();
+
+		// Fetch HLS manifests first (if any), then process direct formats
+		if (!hls_manifest_urls.empty()) {
+			spdlog::debug(
+				"Downloading {} HLS manifest(s)", hls_manifest_urls.size());
+			fetch_hls_manifests(
+				hls_manifest_urls,
+				[self,
+				 all_format_jsons = std::move(all_format_jsons)]() mutable {
+					self->process_direct_formats(std::move(all_format_jsons));
+				});
+		} else {
+			// No HLS manifests, just process direct formats
+			process_direct_formats(std::move(all_format_jsons));
+		}
+	}
+
+	// Fetch HLS manifests and add formats to collected_info
+	void fetch_hls_manifests(const std::vector<std::string> &urls,
+							 std::function<void()> on_complete) {
+		if (urls.empty()) {
+			on_complete();
+			return;
+		}
+
+		auto self = shared_from_this();
+		auto pending = std::make_shared<std::atomic<size_t>>(urls.size());
+		auto mut = std::make_shared<std::mutex>();
+
+		for (const auto &url_raw : urls) {
+			async_process_url_n(url_raw, [self, pending, mut,
+										  on_complete](std::string url) {
+				spdlog::debug("Fetching HLS manifest: {}...",
+							  url.substr(0, std::min(size_t{60}, url.size())));
+
+				self->http->async_get(
+					url, [self, pending, mut, on_complete,
+						  base_url = url](Result<net::HttpResponse> res) {
+						if (res.has_value() && res.value().status_code == 200) {
+							auto streams = HlsParser::parse_master_playlist(
+								res.value().body, base_url);
+
+							if (!streams.empty()) {
+								std::lock_guard lock(*mut);
+								for (const auto &stream : streams) {
+									auto fmt = HlsParser::to_video_format(
+										stream, self->video_id);
+									self->collected_info.formats.push_back(
+										std::move(fmt));
+								}
+								spdlog::debug(
+									"Added {} HLS formats from manifest",
+									streams.size());
+							}
+						} else {
+							spdlog::warn("Failed to fetch HLS manifest");
+						}
+
+						if (--(*pending) == 0) { on_complete(); }
+					});
+			});
+		}
+	}
+
+	// Process direct download formats (from formats and adaptiveFormats)
+	void process_direct_formats(std::vector<nlohmann::json> all_format_jsons) {
 		if (all_format_jsons.empty()) { return finalize_formats(); }
 
 		auto pending =
@@ -739,13 +1166,14 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		auto self = shared_from_this();
 
 		for (const auto &f : all_format_jsons) {
+			std::string client_name = f.value("_client_name", "");
 			async_process_fmt(
-				f, [self, pending, mut](std::optional<VideoFormat> fmt) {
+				f, client_name,
+				[self, pending, mut](std::optional<VideoFormat> fmt) {
 					if (fmt) {
 						std::lock_guard lock(*mut);
 						self->collected_info.formats.push_back(*fmt);
 					}
-					// Check if done
 					size_t remaining = pending->fetch_sub(1);
 					if (remaining == 1) {
 						asio::dispatch(self->handler_ex,
@@ -756,34 +1184,27 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 	}
 
 	void finalize_formats() {
-		// Deduplicate formats by format_id (preserves language variants)
-		std::set<std::string> seen_format_ids;
+		// Deduplicate formats by (format_id, protocol) pair
+		// This preserves both HLS and direct formats with same itag
+		std::set<std::pair<std::string, std::string>> seen_formats;
 		std::vector<VideoFormat> unique_formats;
 		for (const auto &fmt : collected_info.formats) {
-			if (seen_format_ids.find(fmt.format_id) == seen_format_ids.end()) {
-				seen_format_ids.insert(fmt.format_id);
+			auto key = std::make_pair(fmt.format_id, fmt.protocol);
+			if (seen_formats.find(key) == seen_formats.end()) {
+				seen_formats.insert(key);
 				unique_formats.push_back(fmt);
+			} else {
+				spdlog::debug("Deduplicated format: {} (proto={})",
+							  fmt.format_id, fmt.protocol);
 			}
 		}
+		spdlog::debug("Final format count: {} (unique: {})",
+					  collected_info.formats.size(), unique_formats.size());
 		collected_info.formats = std::move(unique_formats);
 
 		complete(outcome::success(std::move(collected_info)));
 	}
 };
-
-const std::vector<InnertubeContext> &AsyncSession::get_clients() {
-	// Priority order based on yt-dlp recommendations:
-	// 1. android_sdkless - Doesn't require PO Token (best choice)
-	// 2. tv              - Good format availability, no PO Token
-	// 3. web_safari      - Pre-merged HLS formats, good fallback
-	// 4. web             - Standard web client with JS player
-	static const std::vector<InnertubeContext> _clients = {
-		Innertube::CLIENT_ANDROID_SDKLESS,	// Best: No POT needed
-		Innertube::CLIENT_TV,				// Good formats, no POT
-		Innertube::CLIENT_WEB_SAFARI,		// HLS formats
-		Innertube::CLIENT_WEB};				// Standard fallback
-	return _clients;
-}
 
 // Extractor Impl
 struct Extractor::Impl {
@@ -791,6 +1212,9 @@ struct Extractor::Impl {
 	std::shared_ptr<net::HttpClient> http;
 	std::shared_ptr<scripting::JsEngine> js;
 	std::vector<std::weak_ptr<AsyncSession>> sessions;
+
+	// Extractor configuration
+	ExtractorArgs extractor_args;
 
 	// Track warmup solver for clean shutdown
 	std::mutex warmup_mutex;
@@ -800,6 +1224,38 @@ struct Extractor::Impl {
 	Impl(std::shared_ptr<net::HttpClient> h, asio::any_io_executor ex)
 		: ex(std::move(ex)), http(std::move(h)) {
 		js = std::make_shared<scripting::JsEngine>(this->ex);
+	}
+
+	// Build client list based on extractor args
+	std::vector<InnertubeContext> get_filtered_clients() const {
+		auto clients_opt = extractor_args.get_player_clients();
+		if (!clients_opt) {
+			spdlog::debug("No player_client args, using defaults");
+			// Use defaults if no extractor args (yt-dlp 2026 defaults)
+			return {Innertube::CLIENT_ANDROID_SDKLESS, Innertube::CLIENT_WEB,
+					Innertube::CLIENT_WEB_SAFARI};
+		}
+
+		spdlog::debug(
+			"Filtered client list: [{}]", fmt::join(*clients_opt, ", "));
+
+		std::vector<InnertubeContext> result;
+		for (const auto &name : *clients_opt) {
+			auto ctx = get_client_by_name(name);
+			if (ctx) {
+				result.push_back(*ctx);
+			} else {
+				spdlog::warn("Unknown client name: {}", name);
+			}
+		}
+
+		if (result.empty()) {
+			spdlog::warn("No valid clients after filtering, using defaults");
+			return {Innertube::CLIENT_ANDROID_SDKLESS, Innertube::CLIENT_TV,
+					Innertube::CLIENT_WEB_SAFARI, Innertube::CLIENT_WEB};
+		}
+
+		return result;
 	}
 
 	~Impl() { shutdown(); }
@@ -837,8 +1293,8 @@ struct Extractor::Impl {
 		}
 
 		auto session = std::make_shared<AsyncSession>(
-			http, js, std::move(url), std::move(handler),
-			std::move(handler_ex));
+			http, js, std::move(url), std::move(handler), std::move(handler_ex),
+			get_filtered_clients());
 		sessions.push_back(session);
 
 		sessions.erase(std::remove_if(sessions.begin(), sessions.end(),
@@ -863,6 +1319,11 @@ asio::any_io_executor Extractor::get_executor() const { return m_impl->ex; }
 
 void Extractor::shutdown() {
 	if (m_impl) { m_impl->shutdown(); }
+}
+
+void Extractor::set_extractor_args(const ExtractorArgs &args) {
+	m_impl->extractor_args = args;
+	spdlog::debug("ExtractorArgs configured for Extractor");
 }
 
 void Extractor::async_process_impl(
@@ -906,25 +1367,6 @@ static long long parse_duration_string(const std::string &duration_str) {
 		seconds += parts[i] * multiplier;
 	}
 	return seconds;
-}
-
-// Convert seconds to duration string
-static std::string seconds_to_duration_string(long long seconds) {
-	if (seconds <= 0) return "0:00";
-
-	long long hours = seconds / 3600;
-	long long minutes = (seconds % 3600) / 60;
-	long long secs = seconds % 60;
-
-	std::string result;
-	if (hours > 0) {
-		result = std::to_string(hours) + ":";
-		if (minutes < 10) result += "0";
-	}
-	result += std::to_string(minutes) + ":";
-	if (secs < 10) result += "0";
-	result += std::to_string(secs);
-	return result;
 }
 
 // Extract search results from Innertube response
@@ -1178,6 +1620,10 @@ std::optional<SearchOptions> parse_search_url(std::string_view url) {
 	return opts;
 }
 
+}  // namespace ytdlpp::youtube
+
+namespace ytdlpp {
+
 void to_json(nlohmann::json &j, const SearchResult &r) {
 	j = nlohmann::json{
 		{"id", r.video_id},
@@ -1221,6 +1667,10 @@ void to_json(nlohmann::json &j, const VideoFormat &f) {
 	// Language fields for yt-dlp parity
 	if (!f.language.empty()) j["language"] = f.language;
 	j["language_preference"] = f.language_preference;
+
+	// Storyboard fields
+	if (f.columns > 0) j["columns"] = f.columns;
+	if (f.rows > 0) j["rows"] = f.rows;
 
 	// Derived bitrates
 	if (f.tbr > 0) {
@@ -1281,8 +1731,14 @@ void to_json(nlohmann::json &j, const VideoInfo &i) {
 		{"was_live", i.was_live},
 		{"extractor", i.extractor},
 		{"extractor_key", i.extractor_key},
+		{"playlist_index",
+		 i.playlist_index ? nlohmann::json(*i.playlist_index) : nullptr},
 		{"_type", i._type}};
 }
+
+}  // namespace ytdlpp
+
+namespace ytdlpp::youtube {
 
 // ... existing methods ...
 

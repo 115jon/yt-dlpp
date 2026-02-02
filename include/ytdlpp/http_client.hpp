@@ -15,7 +15,7 @@
 #include "result.hpp"
 
 namespace ytdlpp::net {
-
+class CookieJar;
 namespace asio = boost::asio;
 
 struct YTDLPP_EXPORT HttpResponse {
@@ -116,6 +116,11 @@ class YTDLPP_EXPORT HttpClient {
 			},
 			token);
 	}
+
+	/**
+	 * Get the shared cookie jar for this client.
+	 */
+	CookieJar &get_cookie_jar();
 
    private:
 	friend class RequestSession;

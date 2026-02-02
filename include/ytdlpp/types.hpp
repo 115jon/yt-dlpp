@@ -4,11 +4,22 @@
 
 #include <cstdint>	// Added for uint8_t
 #include <functional>
+#include <nlohmann/json_fwd.hpp>
 #include <optional>
 #include <string>
 #include <vector>
 
+
 namespace ytdlpp {
+
+// ADL-friendly JSON conversion functions
+struct VideoFormat;
+struct VideoInfo;
+struct SearchResult;
+
+YTDLPP_EXPORT void to_json(nlohmann::json &j, const VideoFormat &f);
+YTDLPP_EXPORT void to_json(nlohmann::json &j, const VideoInfo &i);
+YTDLPP_EXPORT void to_json(nlohmann::json &j, const SearchResult &r);
 
 struct YTDLPP_EXPORT DownloadProgress {
 	long long total_downloaded_bytes;
@@ -41,6 +52,12 @@ struct YTDLPP_EXPORT VideoFormat {
 	long long content_length = 0;
 	std::string language;		   // Language code
 	int language_preference = -1;  // Default -1
+	int source_preference = -1;	   // Default -1, higher is better
+
+	struct Fragment {
+		std::string url;
+		double duration = 0.0;
+	};
 
 	// Additional yt-dlp compatible fields
 	std::string format_note;	// e.g., "144p", "720p", "Premium"
@@ -50,6 +67,9 @@ struct YTDLPP_EXPORT VideoFormat {
 	double aspect_ratio = 0.0;
 	bool has_drm = false;
 	long long filesize_approx = 0;
+	int columns = 0;  // For storyboards
+	int rows = 0;	  // For storyboards
+	std::vector<Fragment> fragments;
 };
 
 // Represents a chapter in a video
@@ -106,6 +126,10 @@ struct YTDLPP_EXPORT VideoInfo {
 
 	long long timestamp = 0;   // Unix timestamp of upload
 	std::string release_date;  // Release date YYYYMMDD
+
+	std::optional<int> playlist_index;
+	std::string playlist_title;
+	std::string playlist_id;
 
 	// Extracted format info (set after format selection)
 	std::string ext;		 // Final extension

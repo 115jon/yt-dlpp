@@ -22,6 +22,8 @@ struct InnertubeContext {
 						// 3 = ANDROID
 						// 5 = IOS
 						// 7 = TVHTML5
+	int android_sdk_version =
+		0;	// Android SDK version (e.g., 30 for Android 11)
 };
 
 class Innertube {
@@ -33,10 +35,13 @@ class Innertube {
 
 	// Recommended clients - don't require PO Token (as of 2026)
 	static const InnertubeContext
-		CLIENT_ANDROID_SDKLESS;				  // Best: No POT needed
+		CLIENT_ANDROID_SDKLESS;						  // Best: No POT needed
+	static const InnertubeContext CLIENT_ANDROID_VR;  // VR client
 	static const InnertubeContext CLIENT_TV;  // Good format availability
 	static const InnertubeContext CLIENT_WEB_SAFARI;  // Pre-merged HLS formats
 	static const InnertubeContext CLIENT_MWEB;		  // Has ultralow formats
+	static const InnertubeContext
+		CLIENT_WEB_CREATOR;	 // Higher quality fallback
 
 	// Helper to generate the JSON context payload for a request
 	static nlohmann::json build_context(const InnertubeContext &client,
@@ -45,7 +50,7 @@ class Innertube {
 
 	// Helper to get headers
 	static std::map<std::string, std::string> get_headers(
-		const InnertubeContext &client);
+		const InnertubeContext &client, const std::string &visitor_data = "");
 };
 
 }  // namespace ytdlpp::youtube

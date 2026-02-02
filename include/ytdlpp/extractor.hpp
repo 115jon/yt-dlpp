@@ -21,6 +21,9 @@ class HttpClient;
 
 namespace ytdlpp::youtube {
 
+// Forward declaration for extractor arguments
+class ExtractorArgs;
+
 namespace asio = boost::asio;
 
 class YTDLPP_EXPORT Extractor {
@@ -62,7 +65,7 @@ class YTDLPP_EXPORT Extractor {
 				async_process_impl(std::move(url_s), std::move(any_handler),
 								   std::move(handler_ex));
 			},
-			token);
+			std::forward<CompletionToken>(token));
 	}
 
 	/// Search YouTube for videos matching the query.
@@ -84,7 +87,7 @@ class YTDLPP_EXPORT Extractor {
 				async_search_impl(
 					options, std::move(any_handler), std::move(handler_ex));
 			},
-			token);
+			std::forward<CompletionToken>(token));
 	}
 
    private:
@@ -102,16 +105,22 @@ class YTDLPP_EXPORT Extractor {
 		CompletionExecutor handler_ex);
 
 	std::unique_ptr<Impl> m_impl;
-};
 
-// JSON Serialization
-YTDLPP_EXPORT void to_json(nlohmann::json &j, const VideoFormat &f);
-YTDLPP_EXPORT void to_json(nlohmann::json &j, const VideoInfo &i);
-YTDLPP_EXPORT void to_json(nlohmann::json &j, const SearchResult &r);
+   public:
+	// Set extractor arguments for configuring extraction behavior
+	// This allows setting options like player_client selection
+	void set_extractor_args(const ExtractorArgs &args);
+};
 
 /// Parse a search URL like "ytsearch:query" or "ytsearch5:query"
 /// Returns SearchOptions if valid, std::nullopt otherwise
 YTDLPP_EXPORT std::optional<SearchOptions> parse_search_url(
 	std::string_view url);
+
+/// Parse extractor arguments string (e.g.,
+/// "youtube:player_client=web,-android_sdkless") Returns a map of extractor
+/// name to key-value pairs
+YTDLPP_EXPORT std::map<std::string, std::map<std::string, std::string>>
+parse_extractor_args(const std::string &args);
 
 }  // namespace ytdlpp::youtube
