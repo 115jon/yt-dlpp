@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ytdlpp/ytdlpp_export.h>
+
 #include <boost/asio.hpp>
 #include <memory>
 #include <optional>
@@ -22,12 +24,12 @@ namespace ytdlpp::youtube {
  *
  * Implements the Web PO Token flow matching yt-dlp's approach:
  * 1. Fetch BotGuard challenge from YouTube's CreateIntegrityToken endpoint
- * 2. Execute the challenge using V8 JavaScript engine
- * 3. Generate the PO Token from the result
+2. Execute the challenge using V8 JavaScript engine
+3. Generate the PO Token from the result
  *
  * This requires a JavaScript runtime (V8) to execute BotGuard challenges.
  */
-class BotGuardPoTokenProvider : public PoTokenProvider {
+class YTDLPP_EXPORT BotGuardPoTokenProvider : public PoTokenProvider {
    public:
 	explicit BotGuardPoTokenProvider(
 		std::shared_ptr<net::HttpClient> http_client,

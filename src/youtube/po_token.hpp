@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ytdlpp/ytdlpp_export.h>
+
 #include <boost/regex.hpp>
 #include <map>
 #include <memory>
@@ -59,7 +61,7 @@ struct PoTokenCacheSpec {
 };
 
 // Abstract base class for PO Token providers
-class PoTokenProvider {
+class YTDLPP_EXPORT PoTokenProvider {
    public:
 	virtual ~PoTokenProvider() = default;
 
@@ -85,7 +87,7 @@ class PoTokenProvider {
 };
 
 // WebPO cache spec provider - generates cache keys for WebPO tokens
-class WebPoCacheSpecProvider : public PoTokenProvider {
+class YTDLPP_EXPORT WebPoCacheSpecProvider : public PoTokenProvider {
    public:
 	WebPoCacheSpecProvider();
 
@@ -109,7 +111,7 @@ class WebPoCacheSpecProvider : public PoTokenProvider {
 };
 
 // Director class that manages PO Token providers and caching
-class PoTokenDirector {
+class YTDLPP_EXPORT PoTokenDirector {
    public:
 	PoTokenDirector();
 	~PoTokenDirector();
@@ -132,17 +134,19 @@ class PoTokenDirector {
 namespace pot {
 
 // Get WebPO content binding for a request
-std::pair<std::string, ContentBindingType> get_webpo_content_binding(
-	const PoTokenRequest &request, bool bind_to_visitor_id = true);
+YTDLPP_EXPORT std::pair<std::string, ContentBindingType>
+get_webpo_content_binding(const PoTokenRequest &request,
+						  bool bind_to_visitor_id = true);
 
 // Extract visitor ID from base64-encoded visitor data
-std::optional<std::string> extract_visitor_id(const std::string &visitor_data);
+YTDLPP_EXPORT std::optional<std::string> extract_visitor_id(
+	const std::string &visitor_data);
 
 // Clean and validate a PO Token
-std::optional<std::string> clean_pot(const std::string &po_token);
+YTDLPP_EXPORT std::optional<std::string> clean_pot(const std::string &po_token);
 
 // Check if a client is a WebPO client
-bool is_webpo_client(const std::string &client_name);
+YTDLPP_EXPORT bool is_webpo_client(const std::string &client_name);
 
 }  // namespace pot
 

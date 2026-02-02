@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ytdlpp/ytdlpp_export.h>
+
 #include <boost/outcome.hpp>
 #include <system_error>
 
@@ -36,7 +38,7 @@ enum class errc {
 	unknown = 100
 };
 
-std::error_code make_error_code(errc e);
+YTDLPP_EXPORT std::error_code make_error_code(errc e);
 
 }  // namespace ytdlpp
 
