@@ -8,6 +8,7 @@
       "default-features": false
     },
     "fmt",
+    "gtest",
     "nlohmann-json",
     "spdlog",
     "utfcpp",
@@ -30,10 +31,11 @@
         "boost-beast",
         "boost-charconv",
         "boost-filesystem",
+        "boost-outcome",
+        "boost-process",
         "boost-program-options",
         "boost-regex",
         "boost-scope-exit",
-        "boost-outcome",
         "boost-url",
         {
           "name": "certify",
