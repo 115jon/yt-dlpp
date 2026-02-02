@@ -233,13 +233,13 @@ TEST(PoTokenDirectorTest, GetTokenWithoutProviders) {
 
 TEST(WebPoTokenProviderTest, IsAvailable) {
 	// Provider without HTTP client should not be available
-	WebPoTokenProvider provider(nullptr);
+	BotGuardPoTokenProvider provider(nullptr, nullptr);
 	EXPECT_FALSE(provider.is_available());
 }
 
 TEST(WebPoTokenProviderTest, GetName) {
-	WebPoTokenProvider provider(nullptr);
-	EXPECT_EQ(provider.get_name(), "webpo");
+	BotGuardPoTokenProvider provider(nullptr, nullptr);
+	EXPECT_EQ(provider.get_name(), "botguard");
 }
 
 TEST(WebPoCacheSpecProviderTest, IsAvailable) {

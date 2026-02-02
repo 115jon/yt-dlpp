@@ -285,24 +285,33 @@ using WebpageCallback = std::function<void(const std::string &)>;
 
 void PlayerScript::async_fetch(const std::string &video_id, ScriptCallback cb,
 							   WebpageCallback on_webpage) {
-	std::string url =
-		fmt::format("https://www.youtube.com/watch?v={}", video_id);
+	std::string host = "www.youtube.com";
+	if (video_id.find("http") == 0) {
+		// Full URL passed instead of just ID
+		if (video_id.find("music.youtube.com") != std::string::npos) {
+			host = "music.youtube.com";
+		}
+	}
+
+	std::string url = fmt::format("https://{}/watch?v={}", host, video_id);
 
 	http_.async_get(
 		url,
-		[this, video_id, cb = std::move(cb),
+		[this, video_id, host, cb = std::move(cb),
 		 on_webpage = std::move(on_webpage)](
 			Result<net::HttpResponse> res_result) mutable {
 			if (res_result.has_error()) {
 				spdlog::error("Failed to fetch video page: {}",
 							  res_result.error().message());
-				return cb(std::nullopt);
+				cb(std::nullopt);
+				return;
 			}
 			auto res = res_result.value();
 			if (res.status_code != 200) {
 				spdlog::error(
 					"Failed to fetch video page. Status: {}", res.status_code);
-				return cb(std::nullopt);
+				cb(std::nullopt);
+				return;
 			}
 
 			if (on_webpage) { on_webpage(res.body, res.headers); }
@@ -310,7 +319,8 @@ void PlayerScript::async_fetch(const std::string &video_id, ScriptCallback cb,
 			auto extracted_url = extract_player_url_from_webpage(res.body);
 			if (!extracted_url) {
 				spdlog::error("Failed to extract player URL");
-				return cb(std::nullopt);
+				cb(std::nullopt);
+				return;
 			}
 
 			player_url_ = *extracted_url;
@@ -335,32 +345,35 @@ void PlayerScript::async_fetch(const std::string &video_id, ScriptCallback cb,
 			auto cached = get_cached_script(player_id);
 			if (cached) {
 				spdlog::info("{}: Using cached player {}", video_id, player_id);
-				return cb(*cached);
+				cb(*cached);
+				return;
 			}
 
 			spdlog::info("{}: Downloading player {}", video_id, player_id);
 
 			if (player_url_.find("http") != 0) {
 				if (player_url_[0] == '/') {
-					player_url_ = "https://www.youtube.com" + player_url_;
+					player_url_ = "https://" + host + player_url_;
 				} else {
-					player_url_ = "https://www.youtube.com/" + player_url_;
+					player_url_ = "https://" + host + "/" + player_url_;
 				}
 			}
 
 			http_.async_get(
 				player_url_,
-				[this, player_id, cb = std::move(cb)](
+				[this, player_id, host, cb = std::move(cb)](
 					Result<net::HttpResponse> script_res_result) mutable {
 					if (script_res_result.has_error()) {
 						spdlog::error("Failed to download player script: {}",
 									  script_res_result.error().message());
-						return cb(std::nullopt);
+						cb(std::nullopt);
+						return;
 					}
 					auto script_res = script_res_result.value();
 					if (script_res.status_code != 200) {
 						spdlog::error("Failed to download player script");
-						return cb(std::nullopt);
+						cb(std::nullopt);
+						return;
 					}
 					// Cache the script
 					cache_script(player_id, script_res.body);

@@ -190,7 +190,8 @@ class AsyncDownloaderSession
 					}
 				}
 				self->on_download_complete();
-			});
+			},
+			streams_.video->http_headers);
 	}
 
 	void download_audio() {
@@ -220,7 +221,8 @@ class AsyncDownloaderSession
 					}
 				}
 				self->on_download_complete();
-			});
+			},
+			streams_.audio->http_headers);
 	}
 
 	void report_progress(const std::string &status) {

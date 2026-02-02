@@ -96,12 +96,14 @@ class YTDLPP_EXPORT HttpClient {
 				  CompletionToken>
 	auto async_download_file(std::string_view url, std::string_view output_path,
 							 ProgressCallback progress_cb,
-							 CompletionToken &&token) {
+							 CompletionToken &&token,
+							 std::map<std::string, std::string> headers = {}) {
 		auto ex = get_executor();
 		return asio::async_initiate<CompletionToken, void(Result<void>)>(
 			[this, ex, url_s = std::string(url),
 			 output_path_s = std::string(output_path),
-			 progress_cb = std::move(progress_cb)](auto &&handler) mutable {
+			 progress_cb = std::move(progress_cb),
+			 headers = std::move(headers)](auto &&handler) mutable {
 				CompletionExecutor handler_ex =
 					asio::get_associated_executor(handler, ex);
 
@@ -112,7 +114,7 @@ class YTDLPP_EXPORT HttpClient {
 				async_download_file_impl(
 					std::move(url_s), std::move(output_path_s),
 					std::move(progress_cb), std::move(any_handler),
-					std::move(handler_ex));
+					std::move(handler_ex), std::move(headers));
 			},
 			token);
 	}
@@ -141,7 +143,8 @@ class YTDLPP_EXPORT HttpClient {
 	void async_download_file_impl(
 		std::string url, std::string output_path, ProgressCallback progress_cb,
 		asio::any_completion_handler<void(Result<void>)> handler,
-		CompletionExecutor handler_ex);
+		CompletionExecutor handler_ex,
+		std::map<std::string, std::string> headers);
 
 	std::unique_ptr<Impl> m_impl;
 };

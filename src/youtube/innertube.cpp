@@ -15,9 +15,9 @@ const InnertubeContext Innertube::CLIENT_ANDROID = {
 	"MOBILE",
 	"Google",
 	"Pixel 5",
-	3,	// INNERTUBE_CONTEXT_CLIENT_NAME = 3
-	30	// androidSdkVersion
-};
+	3,	 // INNERTUBE_CONTEXT_CLIENT_NAME = 3
+	30,	 // androidSdkVersion
+	"www.youtube.com"};
 
 // IOS client - iPhone app
 // Has HLS live streams, 60fps formats on newer devices
@@ -32,8 +32,8 @@ const InnertubeContext Innertube::CLIENT_IOS = {
 	"Apple",
 	"iPhone16,2",
 	5,	// INNERTUBE_CONTEXT_CLIENT_NAME = 5
-	0	// androidSdkVersion (not applicable for iOS)
-};
+	0,	// androidSdkVersion (not applicable for iOS)
+	"www.youtube.com"};
 
 // WEB client - Standard web browser
 // Requires JS player for signature deciphering
@@ -48,23 +48,24 @@ const InnertubeContext Innertube::CLIENT_WEB = {
 	"",
 	"",
 	1,	// INNERTUBE_CONTEXT_CLIENT_NAME = 1
-	0	// androidSdkVersion (not applicable for web)
-};
+	0,	// androidSdkVersion (not applicable for web)
+	"www.youtube.com"};
 
 // ANDROID_VR client - VR app
+// Highly reliable workaround for 403 errors (used by OuterTune)
 const InnertubeContext Innertube::CLIENT_ANDROID_VR = {
 	"ANDROID_VR",
-	"1.71.26",
-	"com.google.android.apps.youtube.vr.oculus/1.71.26 (Linux; U; Android 12L; "
+	"1.61.48",
+	"com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; "
 	"eureka-user Build/SQ3A.220605.009.A1) gzip",
 	"Android",
-	"12L",
+	"12",
 	"MOBILE",
 	"Oculus",
 	"Quest 3",
 	28,	 // INNERTUBE_CONTEXT_CLIENT_NAME = 28
-	32	 // androidSdkVersion
-};
+	31,	 // androidSdkVersion
+	"www.youtube.com"};
 
 // Recommended clients - no PO Token required
 
@@ -79,9 +80,9 @@ const InnertubeContext Innertube::CLIENT_ANDROID_SDKLESS = {
 	"MOBILE",
 	"",	 // No deviceMake (key difference from CLIENT_ANDROID)
 	"",
-	3,	// INNERTUBE_CONTEXT_CLIENT_NAME = 3
-	30	// androidSdkVersion
-};
+	3,	 // INNERTUBE_CONTEXT_CLIENT_NAME = 3
+	30,	 // androidSdkVersion
+	"www.youtube.com"};
 
 // TV client - Smart TV / Cobalt browser
 // Good format availability, works for most videos
@@ -95,8 +96,8 @@ const InnertubeContext Innertube::CLIENT_TV = {
 	"",
 	"",
 	7,	// INNERTUBE_CONTEXT_CLIENT_NAME = 7
-	0	// androidSdkVersion (not applicable for TV)
-};
+	0,	// androidSdkVersion (not applicable for TV)
+	"www.youtube.com"};
 
 // WEB_SAFARI - Safari browser user agent
 // Returns pre-merged video+audio HLS formats (144p/240p/360p/720p/1080p)
@@ -111,8 +112,8 @@ const InnertubeContext Innertube::CLIENT_WEB_SAFARI = {
 	"Apple",
 	"Macintosh",
 	1,	// INNERTUBE_CONTEXT_CLIENT_NAME = 1
-	0	// androidSdkVersion (not applicable for web)
-};
+	0,	// androidSdkVersion (not applicable for web)
+	"www.youtube.com"};
 
 // MWEB client - Mobile web
 // Has 'ultralow' formats, previously worked without PO Token with iPad UA
@@ -127,8 +128,8 @@ const InnertubeContext Innertube::CLIENT_MWEB = {
 	"Apple",
 	"iPad",
 	2,	// INNERTUBE_CONTEXT_CLIENT_NAME = 2
-	0	// androidSdkVersion (not applicable for MWEB)
-};
+	0,	// androidSdkVersion (not applicable for MWEB)
+	"www.youtube.com"};
 
 // WEB_CREATOR client - Creator Studio
 const InnertubeContext Innertube::CLIENT_WEB_CREATOR = {
@@ -142,8 +143,23 @@ const InnertubeContext Innertube::CLIENT_WEB_CREATOR = {
 	"",
 	"",
 	62,	 // INNERTUBE_CONTEXT_CLIENT_NAME = 62
-	0	 // androidSdkVersion (not applicable for web)
-};
+	0,	 // androidSdkVersion (not applicable for web)
+	"www.youtube.com"};
+
+// YouTube Music client
+const InnertubeContext Innertube::CLIENT_WEB_MUSIC = {
+	"WEB_REMIX",
+	"1.20260114.03.00",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like "
+	"Gecko) Chrome/121.0.0.0 Safari/537.36",
+	"Windows",
+	"10.0",
+	"DESKTOP",
+	"",
+	"",
+	67,	 // INNERTUBE_CONTEXT_CLIENT_NAME = 67
+	0,
+	"music.youtube.com"};
 
 nlohmann::json Innertube::build_context(const InnertubeContext &client,
 										const std::string &visitor_data,
@@ -205,9 +221,9 @@ std::map<std::string, std::string> Innertube::get_headers(
 		{"Accept", "application/json"},
 		{"X-YouTube-Client-Name", std::to_string(client.client_id)},
 		{"X-YouTube-Client-Version", client.client_version},
-		{"X-Goog-Api-Format-Version", "1"},
-		{"Origin", "https://www.youtube.com"},
-		{"Referer", "https://www.youtube.com/"}};
+		{"X-Goog-Api-Format-Version", "2"},
+		{"Origin", "https://" + client.api_host},
+		{"Referer", "https://" + client.api_host + "/"}};
 
 	// Add visitor ID for all clients if available (required for GVS token
 	// validation)

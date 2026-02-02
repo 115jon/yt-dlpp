@@ -298,8 +298,8 @@ bool ExtractorArgs::empty() const {
 // =============================================================================
 
 std::vector<std::string> YouTubeConfig::default_clients() {
-	// Match yt-dlp 2026 defaults
-	return {"android_sdkless", "web", "web_safari"};
+	// Prioritize bypass clients for yt-dlpp defaults
+	return {"android_vr", "android_sdkless", "tv", "web_music", "web_safari"};
 }
 
 void YouTubeConfig::apply_extractor_args(const ExtractorArgs &args) {

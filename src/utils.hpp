@@ -11,7 +11,6 @@
 #include <vector>
 #include <ytdlpp/result.hpp>
 
-
 namespace ytdlpp::utils {
 
 // =============================================================================

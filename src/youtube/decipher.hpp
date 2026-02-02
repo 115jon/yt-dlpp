@@ -68,6 +68,21 @@ class SigDecipherer {
 	scripting::JsEngine &js_;
 	std::unique_ptr<EjsSolver> ejs_solver_;
 
+	// Caches and pending maps for memoization
+	std::mutex cache_mutex_;
+	std::map<std::string, std::string> sig_cache_;
+	std::map<std::string, std::string> n_cache_;
+
+	// Track pending operations to avoid redundant solver calls
+	std::map<
+		std::string,
+		std::vector<boost::asio::any_completion_handler<void(std::string)>>>
+		pending_sig_;
+	std::map<
+		std::string,
+		std::vector<boost::asio::any_completion_handler<void(std::string)>>>
+		pending_n_;
+
 	// Async impls
 	void async_load_functions_impl(
 		std::string code,

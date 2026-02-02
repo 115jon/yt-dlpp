@@ -25,17 +25,21 @@ namespace ytdlpp::youtube {
 // Map friendly client names to InnertubeContext objects
 static std::optional<InnertubeContext> get_client_by_name(
 	const std::string &name) {
+	std::string lower_name = boost::to_lower_copy(name);
 	static const std::map<std::string, InnertubeContext> clients = {
 		{"android_sdkless", Innertube::CLIENT_ANDROID_SDKLESS},
 		{"android", Innertube::CLIENT_ANDROID},
 		{"web", Innertube::CLIENT_WEB},
+		{"web_music", Innertube::CLIENT_WEB_MUSIC},
+		{"web_remix", Innertube::CLIENT_WEB_MUSIC},	 // alias
 		{"web_safari", Innertube::CLIENT_WEB_SAFARI},
 		{"tv", Innertube::CLIENT_TV},
+		{"tvhtml5", Innertube::CLIENT_TV},	// alias
 		{"ios", Innertube::CLIENT_IOS},
 		{"mweb", Innertube::CLIENT_MWEB},
 		{"android_vr", Innertube::CLIENT_ANDROID_VR},
 	};
-	auto it = clients.find(name);
+	auto it = clients.find(lower_name);
 	if (it != clients.end()) return it->second;
 	return std::nullopt;
 }
@@ -46,17 +50,23 @@ static std::string extract_video_id(const std::string &url_str) {
 		// Simple regex to catch various ID formats
 		// Matches:
 		// - youtube.com/watch?v=ID
+		// - music.youtube.com/watch?v=ID
 		// - youtube.com/shorts/ID
 		// - youtube.com/embed/ID
 		// - youtube.com/v/ID
 		// - youtu.be/ID
 		static const boost::regex re(
-			R"(^(?:https?://)?(?:www\.|m\.)?(?:youtube\.com/(?:watch\?v=|shorts/|embed/|v/)|youtu\.be/)([\w-]{11}))");
+			R"(^(?:https?://)?(?:www\.|m\.|music\.)?(?:youtube\.com/(?:watch\?v=|shorts/|embed/|v/)|youtu\.be/)([\w-]{11}))");
 
 		boost::smatch m;
 		if (boost::regex_search(url_str, m, re)) { return m[1]; }
 	} catch (...) {}
 	return "";
+}
+
+// Helper to check if URL is a music URL
+static bool is_music_url(const std::string &url) {
+	return url.find("music.youtube.com") != std::string::npos;
 }
 
 using InfoHandler = asio::any_completion_handler<void(Result<VideoInfo>)>;
@@ -333,14 +343,36 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			fmt_json.value("audioSampleRate", "0"));
 		fmt.audio_channels = fmt_json.value("audioChannels", 0);
 
-		if (fmt_json.contains("bitrate"))
-			fmt.tbr = fmt_json["bitrate"].get<double>() / 1000.0;
-		if (fmt_json.contains("averageBitrate"))
-			fmt.tbr = fmt_json["averageBitrate"].get<double>() / 1000.0;
+		spdlog::debug(
+			"Parsing format itag={} for client={}", fmt.itag, client_name);
+
+		// Handle bitrate (numeric or string)
+		if (fmt_json.contains("bitrate")) {
+			if (fmt_json["bitrate"].is_number()) {
+				fmt.tbr = fmt_json["bitrate"].get<double>() / 1000.0;
+			} else {
+				fmt.tbr = utils::to_number_default<double>(
+							  fmt_json["bitrate"].get<std::string>()) /
+						  1000.0;
+			}
+		}
+		if (fmt_json.contains("averageBitrate")) {
+			if (fmt_json["averageBitrate"].is_number()) {
+				fmt.tbr = fmt_json["averageBitrate"].get<double>() / 1000.0;
+			} else {
+				fmt.tbr = utils::to_number_default<double>(
+							  fmt_json["averageBitrate"].get<std::string>()) /
+						  1000.0;
+			}
+		}
+
 		if (fmt_json.contains("contentLength")) {
 			fmt.content_length = utils::to_number_default<long long>(
 				fmt_json.value("contentLength", "0"));
 		}
+
+		// Use average bitrate for audio formats if available
+		fmt.abr = fmt.tbr;
 
 		// Set source_preference based on itag and client
 		// Default for direct formats
@@ -351,9 +383,11 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			fmt.source_preference -= 5;	 // Known damaged format
 		}
 
-		// Bonus for premium clients
+		// Bonus for stable/specialized clients
 		if (client_name.find("premium") != std::string::npos ||
 			client_name.find("tv") != std::string::npos ||
+			client_name.find("vr") != std::string::npos ||
+			client_name.find("music") != std::string::npos ||
 			client_name.find("web_creator") != std::string::npos) {
 			fmt.source_preference += 100;
 		}
@@ -404,13 +438,30 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			}
 		}
 
-		// Handle DRC suffix (like yt-dlp)
-		bool is_drc = fmt_json.value("isDrc", false);
-		if (is_drc) {
+		std::string lower_cname = boost::to_lower_copy(client_name);
+		spdlog::debug("Mapping format itag={} for client='{}' (lower='{}')",
+					  fmt.itag, client_name, lower_cname);
+		if (lower_cname == "tv" || lower_cname == "tvhtml5") {
 			if (format_id_suffix.empty())
-				format_id_suffix = "drc";
+				format_id_suffix = "tv";
 			else
-				format_id_suffix += "-drc";
+				format_id_suffix += "-tv";
+		} else if (lower_cname == "mweb") {
+			if (format_id_suffix.empty())
+				format_id_suffix = "mweb";
+			else
+				format_id_suffix += "-mweb";
+		} else if (lower_cname == "vr" || lower_cname == "android_vr") {
+			if (format_id_suffix.empty())
+				format_id_suffix = "vr";
+			else
+				format_id_suffix += "-vr";
+		} else if (lower_cname == "music" || lower_cname == "web_music" ||
+				   lower_cname == "web_remix") {
+			if (format_id_suffix.empty())
+				format_id_suffix = "music";
+			else
+				format_id_suffix += "-music";
 		}
 
 		// Build final format_id: itag or itag-suffix
@@ -462,6 +513,52 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 				fmt.acodec = "none";
 			}
 		}
+		// Set HTTP headers for download
+		if (!client_name.empty()) {
+			auto client_opt = get_client_by_name(client_name);
+			if (client_opt) {
+				spdlog::debug(
+					"Adding headers for client {}: UA={}, name={}", client_name,
+					client_opt->user_agent, client_opt->client_id);
+				fmt.http_headers["User-Agent"] = client_opt->user_agent;
+				fmt.http_headers["X-YouTube-Client-Name"] =
+					std::to_string(client_opt->client_id);
+				fmt.http_headers["X-YouTube-Client-Version"] =
+					client_opt->client_version;
+
+				// Referer and Origin for web-based clients
+				std::string lower_client = boost::to_lower_copy(client_name);
+				spdlog::debug("Client name: '{}', lower: '{}'", client_name,
+							  lower_client);
+				if (lower_client.find("web") != std::string::npos ||
+					lower_client == "mweb") {
+					spdlog::debug("Identified as WEB client: {}", lower_client);
+					if (lower_client == "web_music" ||
+						lower_client == "web_remix") {
+						fmt.http_headers["Referer"] =
+							"https://music.youtube.com/";
+						fmt.http_headers["Origin"] =
+							"https://music.youtube.com";
+					} else {
+						fmt.http_headers["Referer"] =
+							"https://www.youtube.com/";
+						fmt.http_headers["Origin"] = "https://www.youtube.com";
+					}
+				}
+			} else {
+				spdlog::debug(
+					"No client found for name '{}', headers not added",
+					client_name);
+			}
+		}
+
+		// Fallback/Default UA if not set by client
+		if (fmt.http_headers.find("User-Agent") == fmt.http_headers.end()) {
+			fmt.http_headers["User-Agent"] =
+				"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+				"(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
+		}
+
 		return fmt;
 	}
 
@@ -494,11 +591,13 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			}
 
 			if (!n_val.empty()) {
+				spdlog::debug(
+					"Detected n parameter: {}, transforming...", n_val);
 				auto self = shared_from_this();
 				decipherer.async_transform_n(
 					n_val, [self, url_obj, is_query, n_raw = n_val,
 							cb](std::string new_n) mutable {
-						if (!new_n.empty()) {
+						if (!new_n.empty() && new_n != n_raw) {
 							if (is_query) {
 								auto params = url_obj.params();
 								auto it = params.find("n");
@@ -512,6 +611,11 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 							}
 							spdlog::debug(
 								"Transformed n: {} -> {}", n_raw, new_n);
+						} else {
+							spdlog::debug(
+								"n transformation returned same value or "
+								"empty: '{}'",
+								new_n);
 						}
 						// Convert boost::urls::pct_string_view to std::string
 						auto buf = url_obj.buffer();
@@ -598,6 +702,8 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 				friendly_name = "ios";
 			else if (client.client_name == "TVHTML5")
 				friendly_name = "tv";
+			else if (client.client_name == "ANDROID_VR")
+				friendly_name = "android_vr";
 			else if (client.client_name == "MWEB")
 				friendly_name = "mweb";
 
@@ -606,18 +712,20 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 
 			async_get_info_with_client(
 				video_id, client,
-				[self, name = client.client_name](Result<nlohmann::json> res) {
+				[self, name = friendly_name](Result<nlohmann::json> res) {
 					if (self->cancelled) return;
 
 					{
 						std::lock_guard lock(self->response_mutex_);
 						if (res.has_value()) {
 							auto &json = res.value();
-							if (json.contains("playabilityStatus") &&
-								json["playabilityStatus"]["status"] != "OK") {
-								std::string status =
-									json["playabilityStatus"]["status"]
-										.get<std::string>();
+							std::string status = "UNKNOWN";
+							if (json.contains("playabilityStatus")) {
+								status = json["playabilityStatus"]["status"]
+											 .get<std::string>();
+							}
+
+							if (status != "OK") {
 								std::string reason =
 									json["playabilityStatus"].value(
 										"reason", "");
@@ -630,10 +738,9 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 								// UNPLAYABLE status
 								if (json.contains("streamingData")) {
 									spdlog::debug(
-										"Client {} has streamingData "
-										"despite "
-										"UNPLAYABLE",
-										name);
+										"Client {} has streamingData despite "
+										"status {}",
+										name, status);
 									if (json["streamingData"].contains(
 											"hlsManifestUrl")) {
 										spdlog::info(
@@ -649,7 +756,7 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 							} else {
 								// Log streaming data info
 								if (json.contains("streamingData")) {
-									bool has_formats =
+									bool has_fmts =
 										json["streamingData"].contains(
 											"formats");
 									bool has_adaptive =
@@ -662,8 +769,7 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 										"Client {} streamingData: "
 										"formats={}, "
 										"adaptive={}, hls={}",
-										name, has_formats, has_adaptive,
-										has_hls);
+										name, has_fmts, has_adaptive, has_hls);
 								}
 								self->responses.emplace_back(
 									name, std::move(json));
@@ -685,11 +791,15 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 	void async_get_info_with_client(
 		const std::string &vid, const InnertubeContext &client,
 		std::function<void(Result<nlohmann::json>)> callback) {
-		std::string api_url = "https://www.youtube.com/youtubei/v1/player";
+		std::string api_url =
+			"https://" + client.api_host + "/youtubei/v1/player";
 
 		// Inject PO Token and Visitor Data for WEB-based clients
 		std::string v_data, p_tok;
-		if (client.client_name == "WEB" || client.client_name == "MWEB") {
+		if (client.client_name == "WEB" || client.client_name == "MWEB" ||
+			client.client_name == "WEB_REMIX" ||
+			client.client_name == "ANDROID" ||
+			client.client_name == "ANDROID_VR") {
 			v_data = web_visitor_data_;
 			p_tok = po_token_;
 			spdlog::debug("Using WEB visitor_data (len={}) for client {}",
@@ -743,20 +853,25 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			[client_name = client.client_name,
 			 cb = std::move(callback)](Result<net::HttpResponse> res_result) {
 				if (res_result.has_error()) {
+					spdlog::error("{} client API network error: {}",
+								  client_name, res_result.error().message());
 					cb(outcome::failure(res_result.error()));
 					return;
 				}
 
 				auto r = res_result.value();
 				if (r.status_code != 200) {
+					spdlog::error("{} client API HTTP error: {}", client_name,
+								  r.status_code);
 					cb(outcome::failure(errc::request_failed));
 					return;
 				}
 
 				auto json = nlohmann::json::parse(r.body, nullptr, false);
 				if (json.is_discarded()) {
-					spdlog::debug(
-						"Failed to parse response: {}", r.body.substr(0, 500));
+					spdlog::error(
+						"{} client API JSON parse error", client_name);
+					spdlog::debug("Body: {}", r.body.substr(0, 500));
 					cb(outcome::failure(errc::json_parse_error));
 				} else {
 					// Log the playability status for debugging
@@ -974,6 +1089,8 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 			std::string cipher = fmt_json["signatureCipher"];
 			std::string s, sp, url_raw;
 
+			spdlog::debug("signatureCipher: {}", cipher);
+
 			std::string_view sv(cipher);
 			size_t pos = 0;
 			while (pos < sv.length()) {
@@ -990,12 +1107,17 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 					auto decoded = boost::urls::decode_view(val_encoded);
 					val.assign(decoded.begin(), decoded.end());
 
-					if (key == "s")
+					if (key == "s") {
 						s = val;
-					else if (key == "sp")
+						spdlog::debug("Extracted s (len {}): {}", s.size(), s);
+					} else if (key == "sp") {
 						sp = val;
-					else if (key == "url")
+						spdlog::debug("Extracted sp: {}", sp);
+					} else if (key == "url") {
 						url_raw = val;
+						spdlog::debug("Extracted url (len {}): {}...",
+									  url_raw.size(), url_raw.substr(0, 50));
+					}
 				}
 				pos = amp + 1;
 			}
@@ -1042,8 +1164,9 @@ struct AsyncSession : public std::enable_shared_from_this<AsyncSession> {
 		}
 
 		collected_info.id = video_id;
-		collected_info.webpage_url =
-			"https://www.youtube.com/watch?v=" + video_id;
+		std::string host =
+			is_music_url(url) ? "music.youtube.com" : "www.youtube.com";
+		collected_info.webpage_url = "https://" + host + "/watch?v=" + video_id;
 
 		// Extract metadata from the first response
 		extract_video_metadata(responses[0].second);
@@ -1230,10 +1353,10 @@ struct Extractor::Impl {
 	std::vector<InnertubeContext> get_filtered_clients() const {
 		auto clients_opt = extractor_args.get_player_clients();
 		if (!clients_opt) {
-			spdlog::debug("No player_client args, using defaults");
-			// Use defaults if no extractor args (yt-dlp 2026 defaults)
-			return {Innertube::CLIENT_ANDROID_SDKLESS, Innertube::CLIENT_WEB,
-					Innertube::CLIENT_WEB_SAFARI};
+			// Use defaults if no extractor args (prefer bypass clients)
+			return {Innertube::CLIENT_ANDROID_VR,
+					Innertube::CLIENT_ANDROID_SDKLESS, Innertube::CLIENT_TV,
+					Innertube::CLIENT_WEB_MUSIC, Innertube::CLIENT_WEB_SAFARI};
 		}
 
 		spdlog::debug(
@@ -1292,9 +1415,35 @@ struct Extractor::Impl {
 			return;
 		}
 
+		auto clients = get_filtered_clients();
+		if (is_music_url(url)) {
+			// Check if web_music is already in the list
+			bool has_music = false;
+			for (const auto &c : clients) {
+				if (c.client_name == "WEB_REMIX") {
+					has_music = true;
+					break;
+				}
+			}
+			if (!has_music) {
+				auto music_client = get_client_by_name("web_music");
+				if (music_client) {
+					// Prepend music client for music URLs
+					clients.insert(clients.begin(), *music_client);
+					spdlog::debug("Prepended web_music client for music URL");
+				}
+			}
+		}
+
+		spdlog::debug(
+			"Starting extraction session with {} clients", clients.size());
+		for (const auto &c : clients) {
+			spdlog::debug(" - Client: {}", c.client_name);
+		}
+
 		auto session = std::make_shared<AsyncSession>(
 			http, js, std::move(url), std::move(handler), std::move(handler_ex),
-			get_filtered_clients());
+			std::move(clients));
 		sessions.push_back(session);
 
 		sessions.erase(std::remove_if(sessions.begin(), sessions.end(),
@@ -1379,116 +1528,135 @@ static std::vector<SearchResult> extract_search_results(
 		response, {"contents", "twoColumnSearchResultsRenderer",
 				   "primaryContents", "sectionListRenderer", "contents"});
 
-	if (!contents || !contents->is_array()) return results;
+	if (!contents) {
+		// Try YouTube Music path (Standard)
+		contents = utils::traverse_obj<nlohmann::json>(
+			response, {"contents", "sectionListRenderer", "contents"});
+	}
 
+	if (!contents) {
+		// Try YouTube Music path (Tabbed - seen on some music searches)
+		contents = utils::traverse_obj<nlohmann::json>(
+			response,
+			{"contents", "tabbedSearchResultsRenderer", "tabs", 0,
+			 "tabRenderer", "content", "sectionListRenderer", "contents"});
+	}
+
+	if (!contents || !contents->is_array()) {
+		spdlog::debug("Search: No contents array found in response");
+		return results;
+	}
+
+	// First, check for musicCardShelfRenderer (YT Music top result)
 	for (const auto &section : *contents) {
+		auto card_shelf = utils::traverse_obj<nlohmann::json>(
+			section, {"musicCardShelfRenderer"});
+		if (card_shelf) {
+			SearchResult result;
+			auto vid = utils::traverse_obj<std::string>(
+				*card_shelf, {"buttons", 0, "buttonRenderer", "command",
+							  "watchEndpoint", "videoId"});
+			if (vid) {
+				result.video_id = *vid;
+				result.url = "https://music.youtube.com/watch?v=" + *vid;
+				if (auto title = utils::traverse_obj<std::string>(
+						*card_shelf, {"title", "runs", 0, "text"})) {
+					result.title = utils::sanitize_utf8(*title);
+				}
+				spdlog::debug("Search: Found top result: {} ({})", result.title,
+							  result.video_id);
+				results.push_back(std::move(result));
+			}
+		}
+	}
+
+	// Then, look for musicShelfRenderer or itemSectionRenderer
+	for (const auto &section : *contents) {
+		if (static_cast<int>(results.size()) >= max_results) break;
+
 		auto item_section = utils::traverse_obj<nlohmann::json>(
 			section, {"itemSectionRenderer", "contents"});
+
+		// If no itemSectionRenderer, it might be a musicShelfRenderer (YT
+		// Music)
+		if (!item_section) {
+			item_section = utils::traverse_obj<nlohmann::json>(
+				section, {"musicShelfRenderer", "contents"});
+			if (item_section) {
+				spdlog::debug("Search: Found musicShelfRenderer with {} items",
+							  item_section->size());
+			}
+		}
+
 		if (!item_section || !item_section->is_array()) continue;
+
+		if (!item_section->is_array()) continue;
 
 		for (const auto &item : *item_section) {
 			if (static_cast<int>(results.size()) >= max_results) break;
 
-			// Check for videoRenderer
 			auto video_renderer =
 				utils::traverse_obj<nlohmann::json>(item, {"videoRenderer"});
-			if (!video_renderer) continue;
+			auto music_renderer = utils::traverse_obj<nlohmann::json>(
+				item, {"musicResponsiveListItemRenderer"});
+
+			if (!video_renderer && !music_renderer) continue;
 
 			SearchResult result;
-
-			// Video ID
-			if (auto vid = utils::traverse_obj<std::string>(
-					*video_renderer, {"videoId"})) {
-				result.video_id = *vid;
-				result.url = "https://www.youtube.com/watch?v=" + *vid;
-			} else {
-				continue;  // Skip if no video ID
-			}
-
-			// Title
-			if (auto title_runs = utils::traverse_obj<nlohmann::json>(
-					*video_renderer, {"title", "runs"})) {
-				if (title_runs->is_array() && !title_runs->empty()) {
-					if (auto text = utils::traverse_obj<std::string>(
-							(*title_runs)[0], {"text"})) {
-						result.title = utils::sanitize_utf8(*text);
-					}
+			if (video_renderer) {
+				if (auto vid = utils::traverse_obj<std::string>(
+						*video_renderer, {"videoId"})) {
+					result.video_id = *vid;
+					result.url = "https://www.youtube.com/watch?v=" + *vid;
 				}
-			}
-
-			// Channel
-			if (auto channel_runs = utils::traverse_obj<nlohmann::json>(
-					*video_renderer, {"ownerText", "runs"})) {
-				if (channel_runs->is_array() && !channel_runs->empty()) {
-					if (auto text = utils::traverse_obj<std::string>(
-							(*channel_runs)[0], {"text"})) {
-						result.channel = utils::sanitize_utf8(*text);
-					}
-					// Channel ID from navigation endpoint
-					if (auto browse_id = utils::traverse_obj<std::string>(
-							(*channel_runs)[0],
-							{"navigationEndpoint", "browseEndpoint",
-							 "browseId"})) {
-						result.channel_id = *browse_id;
-					}
-				}
-			}
-
-			// Duration
-			if (auto duration_text = utils::traverse_obj<std::string>(
-					*video_renderer, {"lengthText", "simpleText"})) {
-				result.duration_string = *duration_text;
-				result.duration_seconds = parse_duration_string(*duration_text);
-			}
-
-			// Thumbnail
-			if (auto thumbs = utils::traverse_obj<nlohmann::json>(
-					*video_renderer, {"thumbnail", "thumbnails"})) {
-				if (thumbs->is_array() && !thumbs->empty()) {
-					if (auto url = utils::traverse_obj<std::string>(
-							thumbs->back(), {"url"})) {
-						result.thumbnail = *url;
-					}
-				}
-			}
-
-			// View count
-			if (auto view_count_text = utils::traverse_obj<std::string>(
-					*video_renderer, {"viewCountText", "simpleText"})) {
-				// Parse "1,234,567 views" -> 1234567
-				std::string view_str;
-				for (char c : *view_count_text) {
-					if (c >= '0' && c <= '9') view_str += c;
-				}
-				if (!view_str.empty()) {
-					try {
-						result.view_count = std::stoll(view_str);
-					} catch (...) {}
-				}
-			}
-
-			// Published time
-			if (auto published = utils::traverse_obj<std::string>(
-					*video_renderer, {"publishedTimeText", "simpleText"})) {
-				result.upload_date = *published;
-			}
-
-			// Description snippet
-			if (auto desc_runs = utils::traverse_obj<nlohmann::json>(
-					*video_renderer,
-					{"detailedMetadataSnippets", 0, "snippetText", "runs"})) {
-				if (desc_runs->is_array()) {
-					for (const auto &run : *desc_runs) {
+				if (auto title_runs = utils::traverse_obj<nlohmann::json>(
+						*video_renderer, {"title", "runs"})) {
+					if (title_runs->is_array() && !title_runs->empty()) {
 						if (auto text = utils::traverse_obj<std::string>(
-								run, {"text"})) {
-							result.description_snippet +=
-								utils::sanitize_utf8(*text);
+								(*title_runs)[0], {"text"})) {
+							result.title = utils::sanitize_utf8(*text);
+						}
+					}
+				}
+				if (auto channel_runs = utils::traverse_obj<nlohmann::json>(
+						*video_renderer, {"ownerText", "runs"})) {
+					if (channel_runs->is_array() && !channel_runs->empty()) {
+						if (auto text = utils::traverse_obj<std::string>(
+								(*channel_runs)[0], {"text"})) {
+							result.channel = utils::sanitize_utf8(*text);
+						}
+					}
+				}
+			} else if (music_renderer) {
+				if (auto vid = utils::traverse_obj<std::string>(
+						*music_renderer, {"playlistItemData", "videoId"})) {
+					result.video_id = *vid;
+					result.url = "https://music.youtube.com/watch?v=" + *vid;
+				}
+				auto flex_cols = utils::traverse_obj<nlohmann::json>(
+					*music_renderer, {"flexColumns"});
+				if (flex_cols && flex_cols->is_array() &&
+					flex_cols->size() >= 1) {
+					if (auto title = utils::traverse_obj<std::string>(
+							(*flex_cols)[0],
+							{"musicResponsiveListItemFlexColumnRenderer",
+							 "text", "runs", 0, "text"})) {
+						result.title = utils::sanitize_utf8(*title);
+					}
+					if (flex_cols->size() >= 2) {
+						if (auto artist = utils::traverse_obj<std::string>(
+								(*flex_cols)[1],
+								{"musicResponsiveListItemFlexColumnRenderer",
+								 "text", "runs", 0, "text"})) {
+							result.channel = utils::sanitize_utf8(*artist);
 						}
 					}
 				}
 			}
 
-			results.push_back(std::move(result));
+			if (!result.video_id.empty()) {
+				results.push_back(std::move(result));
+			}
 		}
 		if (static_cast<int>(results.size()) >= max_results) break;
 	}
@@ -1507,16 +1675,28 @@ void Extractor::async_search_impl(
 				  options.max_results);
 
 	// Build search request using Innertube context
-	auto context = Innertube::CLIENT_WEB;
+	auto context = options.is_music_search ? Innertube::CLIENT_WEB_MUSIC
+										   : Innertube::CLIENT_WEB;
 	nlohmann::json payload = Innertube::build_context(context);
 	payload["query"] = options.query;
-	payload["params"] =
-		options.sort_by_date ? SEARCH_PARAMS_DATE : SEARCH_PARAMS_VIDEOS;
+
+	if (options.is_music_search) {
+		// YouTube Music uses different search params
+		// "EgWKAQIIAWoCEAE%3D" - Songs only
+		payload["params"] = "EgWKAQIIAWoCEAE=";
+	} else {
+		payload["params"] =
+			options.sort_by_date ? SEARCH_PARAMS_DATE : SEARCH_PARAMS_VIDEOS;
+	}
 
 	auto headers = Innertube::get_headers(context);
 
+	std::string search_url =
+		options.is_music_search ? "https://music.youtube.com/youtubei/v1/search"
+								: "https://www.youtube.com/youtubei/v1/search";
+
 	http->async_post(
-		"https://www.youtube.com/youtubei/v1/search", payload.dump(),
+		search_url, payload.dump(),
 		[handler = std::move(handler), handler_ex,
 		 options](Result<net::HttpResponse> result) mutable {
 			if (result.has_error()) {
@@ -1563,13 +1743,24 @@ std::optional<SearchOptions> parse_search_url(std::string_view url) {
 	// ytsearchall:hello
 
 	std::string_view prefix = "ytsearch";
-	if (url.substr(0, prefix.size()) != prefix) { return std::nullopt; }
+	std::string_view music_prefix = "ytmsearch";
 
-	std::string_view remainder = url.substr(prefix.size());
+	bool is_music = false;
+	std::string_view active_prefix = prefix;
+
+	if (url.substr(0, music_prefix.size()) == music_prefix) {
+		is_music = true;
+		active_prefix = music_prefix;
+	} else if (url.substr(0, prefix.size()) != prefix) {
+		return std::nullopt;
+	}
+
+	std::string_view remainder = url.substr(active_prefix.size());
 
 	SearchOptions opts;
 	opts.max_results = 1;  // Default for plain ytsearch:
 	opts.sort_by_date = false;
+	opts.is_music_search = is_music;
 
 	// Find the colon
 	auto colon_pos = remainder.find(':');

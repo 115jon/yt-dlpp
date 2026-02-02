@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-
 namespace ytdlpp {
 
 // ADL-friendly JSON conversion functions
@@ -70,6 +69,7 @@ struct YTDLPP_EXPORT VideoFormat {
 	int columns = 0;  // For storyboards
 	int rows = 0;	  // For storyboards
 	std::vector<Fragment> fragments;
+	std::map<std::string, std::string> http_headers;
 };
 
 // Represents a chapter in a video
@@ -163,6 +163,7 @@ struct YTDLPP_EXPORT SearchOptions {
 	std::string query;
 	int max_results = 10;
 	bool sort_by_date = false;
+	bool is_music_search = false;
 };
 
 // Download options - yt-dlp compatible

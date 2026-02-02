@@ -24,6 +24,7 @@ struct InnertubeContext {
 						// 7 = TVHTML5
 	int android_sdk_version =
 		0;	// Android SDK version (e.g., 30 for Android 11)
+	std::string api_host = "www.youtube.com";
 };
 
 class Innertube {
@@ -41,7 +42,8 @@ class Innertube {
 	static const InnertubeContext CLIENT_WEB_SAFARI;  // Pre-merged HLS formats
 	static const InnertubeContext CLIENT_MWEB;		  // Has ultralow formats
 	static const InnertubeContext
-		CLIENT_WEB_CREATOR;	 // Higher quality fallback
+		CLIENT_WEB_CREATOR;							 // Higher quality fallback
+	static const InnertubeContext CLIENT_WEB_MUSIC;	 // YouTube Music client
 
 	// Helper to generate the JSON context payload for a request
 	static nlohmann::json build_context(const InnertubeContext &client,
