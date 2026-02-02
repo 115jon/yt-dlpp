@@ -4,12 +4,13 @@ include(CMakeFindDependencyMacro)
 
 # Find required dependencies
 # Boost - works with both vcpkg Boost (CONFIG) and system Boost (Module)
-find_dependency(Boost REQUIRED COMPONENTS regex program_options filesystem)
+find_dependency(Boost REQUIRED COMPONENTS regex program_options filesystem asio url charconv)
 
 find_dependency(fmt CONFIG REQUIRED)
 find_dependency(nlohmann_json CONFIG REQUIRED)
 find_dependency(spdlog CONFIG REQUIRED)
 find_dependency(certify CONFIG REQUIRED)
+find_dependency(utf8cpp CONFIG REQUIRED)
 find_dependency(ZLIB REQUIRED)
 
 # FFmpeg - try CMake CONFIG mode first (vcpkg), then fallback to pkg-config
